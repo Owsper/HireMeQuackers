@@ -1,0 +1,181 @@
+"""Source base types + abstract source interface."""
+from __future__ import annotations
+
+import abc
+from dataclasses import dataclass, field
+from typing import List, Optional
+from urllib.parse import urlparse
+
+import httpx
+
+from config.search_config import EmploymentType, SearchConfig
+from services.safe_requests import safe_get
+from services.sanitization import strip_html
+
+
+@dataclass
+class RawListing:
+    """Normalized raw job listed. Pre-filtering + pre-HTML-strip."""
+
+    source: str
+    title: str
+    company: str
+    location: Optional[str] = None
+    country: Optional[str] = None
+    description_html: Optional[str] = None
+    description_text: Optional[str] = None
+    employment_type: Optional[EmploymentType] = None
+    workplace_arrangement: Optional[str] = None
+    required_skills: List[str] = field(default_factory=list)
+    preferred_skills: List[str] = field(default_factory=list)
+    education_requirements: Optional[str] = None
+    experience_requirements: Optional[str] = None
+    language_requirements: Optional[str] = None
+    salary: Optional[str] = None
+    industry: Optional[str] = None
+    original_url: str = ""
+    application_url: Optional[str] = None
+    published_at: Optional[str] = None  # ISO 8601 or raw
+
+    def text_description(self) -> Optional[str]:
+        """Textifcatif the description (stored as text field)."""
+        if self.description_text:
+            return self.description_text
+        if self.description_html:
+            return strip_html(self.description_html)
+        return None
+
+
+@dataclass
+class SourceResult:
+    """Outcome of a single source scan."""
+
+    success: bool
+    listings: List[RawListing] = field(default_factory=list)
+    error_message: Optional[str] = None
+    listings_found: int = 0
+    listings_new: int = 0
+    cache_ttl: int = 0
+
+    def details(self) -> dict:
+        return {
+            "success": self.success,
+            "listings_found": self.listings_found,
+            "listings_new": self.listings_new,
+            "error": self.error_message,
+        }
+
+
+class JobSource(abc.ABC):
+    """Abstract base for all source adapters."""
+
+    # Override in subclasses:
+    # name: str = "MySource"
+    # official_search_url: str = "https://example.com"
+    # slug: str = "mysource"
+
+    name: str = "Generic"
+    slug: str = "generic"
+    official_search_url: Optional[str] = None
+    robots_check: bool = False
+
+    def __init__(self, *, client: Optional[httpx.Client] = None, allow_robots: bool = True):
+        self.client = client
+        self.allow_robots = allow_robots
+
+    @abc.abstractmethod
+    def scan(self, cfg: SearchConfig) -> SourceResult:
+        """Fetch latest listings for the search config.
+
+        Return at most the jobs in the search, post-filtering by
+        employment type + locations, etc.
+        BEFORE HTTP — subclasses can pre-filter with a `listings` [] to skip
+        fetching when no relevant title matches are present (e.g. guarded
+        RSS titles).
+        """
+        raise NotImplementedError
+
+    # ---- helpers ----
+    def apply_filters(self, cfg: SearchConfig, listings: List[RawListing]) -> List[RawListing]:
+        lower_inc = [k.lower() for k in cfg.include_keywords]
+        lower_excl = [k.lower() for k in cfg.exclude_keywords]
+        lower_locs = [loc.lower().strip() for loc in cfg.locations if loc and loc.strip()]
+        lower_exl_locs = [loc.lower().strip() for loc in cfg.excluded_locations if loc and loc.strip()]
+        require_workplace = any(
+            (cfg.include_remote, cfg.include_hybrid, cfg.include_onsite, cfg.worldwide_remote)
+        )
+
+        out: List[RawListing] = []
+        for item in listings:
+            text = " | ".join(
+                [item.title or "", item.company or "", item.location or "",
+                 item.description_text or ""]
+            ).lower()
+            # exclude keywords
+            if any(k in text for k in lower_excl):
+                continue
+            # include keywords: if any specified, skip when no match
+            if lower_inc and not any(k in text or k in item.title.lower() for k in lower_inc):
+                continue
+            # employment types: if provided, skip when mismatch
+            if cfg.employment_types:
+                item_et = item.employment_type
+                if item_et is not None and item_et not in cfg.employment_types:
+                    continue
+            # locations: any of the user-provided substrings in the listing
+            if lower_locs:
+                loc_text = (item.location or "").lower()
+                title_loc = (item.title or "").lower()
+                desc = (item.description_text or "").lower()
+                if not any(
+                    (loc in loc_text) or (loc in title_loc) or (loc in desc)
+                    for loc in lower_locs
+                ):
+                    continue
+            if lower_exl_locs:
+                loc_text = (item.location or "").lower()
+                if any(loc in loc_text for loc in lower_exl_locs):
+                    continue
+            # workplace arrangement
+            if require_workplace:
+                arr = (item.workplace_arrangement or "").lower()
+                allowed_ss = []
+                if cfg.include_remote:
+                    allowed_ss.append("remote")
+                if cfg.worldwide_remote:
+                    allowed_ss.append("worldwide")
+                if cfg.include_hybrid:
+                    allowed_ss.append("hybrid")
+                if cfg.include_onsite:
+                    allowed_ss.append("onsite")
+                if arr:
+                    if not any(s in arr for s in allowed_ss):
+                        continue
+                # if arr is empty/unknown, pass through (unknown is allowed)
+            out.append(item)
+            if len(out) >= cfg.max_results:
+                break
+        return out
+
+    # ---- HTTP helpers ----
+    def get_response(self, url: str, *, timeout: float = 15.0, max_bytes: int = 3 * 1024 * 1024):
+        """Return (httpx.Response | None, error_message | None).
+
+        `client=None` in safe_get creates a fresh client per call.
+        An httpx.Client supplied to the source is forwarded instead.
+        """
+        from services.safe_requests import safe_get
+
+        try:
+            result = safe_get(
+                url,
+                timeout=timeout,
+                max_bytes=max_bytes,
+                client=self.client,
+            )
+        except (ValueError, Exception) as exc:
+            return None, str(exc)
+        if result.error is not None and result.content == b"":
+            return None, result.error
+        return result, None
+

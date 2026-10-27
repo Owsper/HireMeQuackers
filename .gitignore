@@ -1,0 +1,55 @@
+# Environments
+.env
+.venv/
+venv/
+.eggs/
+*.egg-info/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.pytest_cache/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Streamlit
+.streamlit/secrets.toml
+.streamlit/config.toml
+
+# Runtime data (kept with .gitkeep only)
+data/
+!data/.gitkeep
+data/cache/
+data/uploads/
+data/logs/
+!data/logs/.gitkeep
+output/
+!output/.gitkeep
+
+# Databases and local db
+*.sqlite
+*.sqlite3
+*.db
+
+# Generated documents
+*.pdf
+*.docx
+*.md.bak
+
+# Playwright build artifacts (if playwright ever gets installed)
+playwright-report/
+test-results/
+
+# Build/pip artifacts
+pip_out.txt
+*.log
+
+# Fitten temp workspace
+.fittencode/
+.fitten/
