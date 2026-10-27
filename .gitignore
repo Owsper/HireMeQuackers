@@ -49,7 +49,3 @@ test-results/
 # Build/pip artifacts
 pip_out.txt
 *.log
-
-# Fitten temp workspace
-.fittencode/
-.fitten/
