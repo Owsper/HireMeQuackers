@@ -670,6 +670,12 @@ def get_job(session: Session, job_id: int) -> Optional[Job]:
     return session.query(Job).filter_by(id=job_id).first()
 
 
+def ensure_migrations(engine) -> None:
+    """Apply pending DB migrations. Idempotent."""
+    from database.migrations import upgrade
+    upgrade(engine)
+
+
 # ---- helpers ----
 
 
