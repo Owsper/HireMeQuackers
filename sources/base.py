@@ -36,6 +36,11 @@ class RawListing:
     original_url: str = ""
     application_url: Optional[str] = None
     published_at: Optional[str] = None  # ISO 8601 or raw
+    # PROVIDER provenance — records *which* search provider surfaced this hit
+    # (e.g. "brave", "duckduckgo") and *which* query string matched, so the
+    # scan UI can report API usage / provider coverage (spec §10).
+    provider: Optional[str] = None
+    provider_query: Optional[str] = None
 
     def text_description(self) -> Optional[str]:
         """Textifcatif the description (stored as text field)."""
