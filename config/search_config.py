@@ -106,6 +106,14 @@ class SearchConfig(BaseModel):
     min_match_score: float = 0.0
     enabled_sources: List[str] = Field(default_factory=list)
 
+    # -- max-coverage discovery engine (Phase A) --
+    search_provider: str = "brave"
+    max_queries_per_scan: int = 30
+    per_source_max_results: int = 100
+    enable_detail_extraction: bool = True
+    enable_social_discovery: bool = True
+    per_domain_min_seconds: float = 1.5
+
     @field_validator("employment_types", mode="before")
     @classmethod
     def _coerce_types(cls, v: Any) -> List[EmploymentType]:
@@ -157,6 +165,12 @@ class SearchConfig(BaseModel):
             "max_results": self.max_results,
             "min_match_score": self.min_match_score,
             "enabled_sources": sorted(set(self.enabled_sources)),
+            "search_provider": self.search_provider,
+            "max_queries_per_scan": self.max_queries_per_scan,
+            "per_source_max_results": self.per_source_max_results,
+            "enable_detail_extraction": self.enable_detail_extraction,
+            "enable_social_discovery": self.enable_social_discovery,
+            "per_domain_min_seconds": self.per_domain_min_seconds,
         }
 
     def hash_config(self) -> str:
