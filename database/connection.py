@@ -98,6 +98,10 @@ def init_db(url: Optional[str] = None) -> Engine:
 
     Base.metadata.create_all(bind=engine)
 
+    # Apply backward-compatible column/table migrations
+    from .repository import ensure_migrations
+    ensure_migrations(engine)
+
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     with factory() as session:
         _bump_schema_version(session)
