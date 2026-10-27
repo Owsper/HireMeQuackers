@@ -73,6 +73,15 @@ class Job(Base):
     status: Mapped[str] = mapped_column(String(40), default="OPEN", index=True)
     content_fingerprint: Mapped[str] = mapped_column(String(80), index=True)
 
+    # --- Max-coverage discovery engine fields (Phase A2) ---
+    external_job_id: Mapped[Optional[str]] = mapped_column(String(120), nullable=True, index=True)
+    source_type: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, default=None)
+    verification_status: Mapped[str] = mapped_column(String(30), nullable=False, default="unverified")
+    extraction_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    last_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    application_method: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    scam_risk_flags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     @property
     def required_skills(self) -> List[str]:
         return _from_json(self.required_skills_json) or []
@@ -260,6 +269,32 @@ class SchemaVersion(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     version: Mapped[str] = mapped_column(String(40))
     applied_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ScanSourceHealth(Base):
+    __tablename__ = "scan_source_health"
+    __table_args__ = (UniqueConstraint("source_name", name="uq_scan_source_health_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_name: Mapped[str] = mapped_column(String(60), nullable=False)
+    last_scanned_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    listings_found: Mapped[int] = mapped_column(Integer, default=0)
+    listings_stale: Mapped[int] = mapped_column(Integer, default=0)
+    is_healthy: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class SourceRegistryEntry(Base):
+    __tablename__ = "source_registry"
+    __table_args__ = (UniqueConstraint("domain", name="uq_source_registry_domain"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    domain: Mapped[str] = mapped_column(String(200), nullable=False)
+    ats_type: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    board_slug: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    discovered_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    discovered_via: Mapped[str] = mapped_column(String(40), default="manual")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 # Indexes for performance
