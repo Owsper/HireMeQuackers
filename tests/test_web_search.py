@@ -130,13 +130,20 @@ def test_query_pairs_respects_max_queries():
 
 
 def test_scan_returns_clean_failure_when_no_pairs():
-    """If _query_pairs is patched to return [] (no network at all),
+    """If `plan_queries` is patched to return [] (no queries at all),
     scan must surface an error, not silently crash.
+
+    Note: this test now patches `services.query_planner.plan_queries`
+    (not the legacy `_query_pairs`), because the scan is now
+    provider-driven.
     """
-    import sources.web_search as ws
+    from services import query_planner as qp
     from sources.web_search import WebSearchSource
-    orig = ws._query_pairs
-    ws._query_pairs = lambda cfg: []
+    orig_plan_queries = qp.plan_queries
+    # Patch the symbol that `web_search.py` references (imported by name)
+    import sources.web_search as ws
+    orig_ws_plan_queries = ws.plan_queries
+    ws.plan_queries = lambda cfg, *a, **kw: []
     try:
         src = WebSearchSource()
         try:
@@ -147,6 +154,6 @@ def test_scan_returns_clean_failure_when_no_pairs():
             except Exception:
                 pass
     finally:
-        ws._query_pairs = orig
+        ws.plan_queries = orig_ws_plan_queries
     assert r.success is False
     assert r.error_message
