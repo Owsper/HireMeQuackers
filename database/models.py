@@ -82,6 +82,11 @@ class Job(Base):
     application_method: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
     scam_risk_flags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # --- P2 search-intent validation columns ---
+    title_relevance: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    location_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    match_explanation: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     @property
     def required_skills(self) -> List[str]:
         return _from_json(self.required_skills_json) or []
