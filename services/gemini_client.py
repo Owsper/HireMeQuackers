@@ -40,6 +40,32 @@ SCORE_RESULT_FIELDS = (
 
 _SCORE_PROTECTION_VALUES = {"great", "good", "poor", "bad"}
 
+_TITLE_RELEVANCE_VALUES = {"exact", "related", "weak", "none"}
+_LOCATION_COMPATIBILITY_VALUES = {"match", "mismatch", "unverified"}
+_OPEN_ENDED_VALUES = {"match", "mismatch", "unspecified"}
+
+
+def _opt_str(v: Any, allowed: set) -> Optional[str]:
+    if v is None:
+        return None
+    s = str(v).strip().lower()
+    if not s:
+        return None
+    return s if s in allowed else None
+
+
+def _opt_int(v: Any, lo: int, hi: int) -> Optional[int]:
+    if v is None:
+        return None
+    try:
+        x = int(v)
+    except (TypeError, ValueError):
+        try:
+            x = int(float(v))
+        except (TypeError, ValueError):
+            return None
+    return max(lo, min(hi, x))
+
 _CONFIDENCE = {"high", "medium", "low"}
 
 _PATTERNS_TO_CLEAN = [
@@ -187,6 +213,26 @@ class GeminiClient:
             evidence: List[str]
             missing_recommendation: List[str]
             confidence: str
+            # ---- New: structured search-relevance view -----------------
+            # These are independent of the *candidate* fit (`total_score`):
+            #   title_relevance            -- "exact" | "related" | "weak" | "none"
+            #   location_compatibility     -- "match" | "mismatch" | "unverified"
+            #   skills_match               -- int 0..100 (fraction of must-have skills covered)
+            #   seniority_compatibility    -- "match" | "mismatch" | "unspecified"
+            #   employment_type_compatible -- "match" | "mismatch" | "unspecified"
+            #   verification_confidence    -- "high" | "medium" | "low"
+            #   search_relevance_score     -- 0..100 (how well the job fits the *search*,
+            #                                  independent of the candidate; used to
+            #                                  surface the top "relevant" jobs first
+            #                                  in the UI; never overrides a hard
+            #                                  deterministic filter rejection)
+            title_relevance: Optional[str] = None
+            location_compatibility: Optional[str] = None
+            skills_match: Optional[int] = None
+            seniority_compatibility: Optional[str] = None
+            employment_type_compatible: Optional[str] = None
+            verification_confidence: Optional[str] = None
+            search_relevance_score: Optional[int] = None
 
         system_instructions = (
             "You are a professional fit scorer for job applicants. "
@@ -393,6 +439,18 @@ def deterministic_score(profile: CandidateProfile, job: Job) -> Dict[str, Any]:
         "confidence": confidence,
         "ai_model": "deterministic-fallback",
         "notes": [],
+        # Deterministic search-relevance view. Title relevance is "weak"
+        # by default — the prompt-floated word "python" *is* present, that
+        # alone doesn't make this a "Python Developer". The filter layer
+        # already runs a *strict* title check before this, so the UI-level
+        # "weak" value here just says "we didn't classify it more tightly".
+        "title_relevance": "weak",
+        "location_compatibility": "unverified",
+        "skills_match": int(100 * len(matched) / max(1, len(job.required_skills or matched or missing or [1]))),
+        "seniority_compatibility": "unspecified",
+        "employment_type_compatible": None,
+        "verification_confidence": "low",
+        "search_relevance_score": None,
     }
 
 
@@ -537,6 +595,14 @@ def normalize_score(data: Dict[str, Any]) -> Dict[str, Any]:
         "confidence": str(data.get("confidence", "low")).lower(),
         "ai_model": str(data.get("ai_model") or (get_config().gemini_model or "Gemini")).lower(),
         "notes": [str(n) for n in (data.get("notes") or [])],
+        # ---- structured search-relevance view (independent of total_score) ----
+        "title_relevance": _opt_str(data.get("title_relevance"), _TITLE_RELEVANCE_VALUES),
+        "location_compatibility": _opt_str(data.get("location_compatibility"), _LOCATION_COMPATIBILITY_VALUES),
+        "skills_match": _opt_int(data.get("skills_match"), 0, 100),
+        "seniority_compatibility": _opt_str(data.get("seniority_compatibility"), _OPEN_ENDED_VALUES),
+        "employment_type_compatible": _opt_str(data.get("employment_type_compatible"), _OPEN_ENDED_VALUES),
+        "verification_confidence": _opt_str(data.get("verification_confidence"), _CONFIDENCE),
+        "search_relevance_score": _opt_int(data.get("search_relevance_score"), 0, 100),
     }
     # enforce enum constants
     for k in ("experience_fit", "education_fit", "language_fit", "location_fit"):
