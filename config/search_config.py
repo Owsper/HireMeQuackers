@@ -114,6 +114,25 @@ class SearchConfig(BaseModel):
     enable_social_discovery: bool = True
     per_domain_min_seconds: float = 1.5
 
+    # -- detail-page enrichment (Phase 3) --
+    enrichment_max_per_scan: int = 25
+    enrichment_delay_seconds: float = 1.5
+
+    # -- feed registry + optional extra sources (Phase 5) --
+    # User's own feed URLs (unioned with the registry at scan time).
+    # This is a *new* field, so configs loaded from older JSON stay valid.
+    rss_urls: List[str] = Field(default_factory=list)
+    # Categories from services.feed_registry that ship in with this scan.
+    # Empty list = use all enabled_default feeds.  Values: "remote", "european",
+    # "student", "industry", "general".
+    feed_registry_categories: List[str] = Field(
+        default_factory=lambda: ["remote", "european", "student"]
+    )
+    # Optional: EURES public API endpoint.  None => the EURES source is
+    # *skipped* (not counted as failed) because no verified keyless endpoint
+    # is bundled (EURES's machine-readable data lives behind the EURES JPY portal).
+    eures_api_url: Optional[str] = None
+
     @field_validator("employment_types", mode="before")
     @classmethod
     def _coerce_types(cls, v: Any) -> List[EmploymentType]:
@@ -165,6 +184,9 @@ class SearchConfig(BaseModel):
             "max_results": self.max_results,
             "min_match_score": self.min_match_score,
             "enabled_sources": sorted(set(self.enabled_sources)),
+            "rss_urls": sorted(set(self.rss_urls)),
+            "feed_registry_categories": sorted(set(self.feed_registry_categories)),
+            "eures_api_url": self.eures_api_url,
             "search_provider": self.search_provider,
             "max_queries_per_scan": self.max_queries_per_scan,
             "per_source_max_results": self.per_source_max_results,
