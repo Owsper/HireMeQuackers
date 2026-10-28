@@ -151,6 +151,74 @@ def list_jobs(session: Session, limit: int = 200) -> List[Job]:
     return session.query(Job).order_by(Job.first_discovered_at.desc()).limit(limit).all()
 
 
+def update_job_from_enrichment(
+    session: Session, job_id: int, detail: Any
+) -> int:
+    """Fill in currently-empty Job fields from an ExtractedDetail.
+
+    Never overwrites data that already exists. Returns number of rows updated.
+    """
+    job = session.query(Job).filter_by(id=job_id).first()
+    if job is None:
+        return 0
+    changes = False
+
+    def _fill(attr: str, value: Any) -> None:
+        nonlocal changes
+        if value is None or value == "":
+            return
+        current = getattr(job, attr, None)
+        if current is None or current == "":
+            setattr(job, attr, value)
+            changes = True
+
+    _fill("description", detail.description_text)
+    _fill("company", detail.employer)
+    _fill("location", detail.location)
+    _fill("salary", detail.salary_raw)
+    _fill("employment_type", detail.employment_type)
+    _fill("workplace_arrangement", detail.workplace_arrangement)
+    _fill("application_url", detail.application_url)
+    _fill("education_requirements", detail.education_requirements)
+    if detail.json_ld_present or detail.extraction_confidence > 0:
+        if job.extraction_confidence is None or job.extraction_confidence < detail.extraction_confidence:
+            job.extraction_confidence = float(detail.extraction_confidence)
+            changes = True
+    if detail.posted_date:
+        if job.published_at is None:
+            from datetime import datetime
+            try:
+                job.published_at = datetime.strptime(str(detail.posted_date)[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                changes = True
+            except ValueError:
+                pass
+    if detail.closing_date:
+        if job.closing_at is None:
+            from datetime import datetime
+            try:
+                job.closing_at = datetime.strptime(str(detail.closing_date)[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                changes = True
+            except ValueError:
+                pass
+    if not changes:
+        return 0
+    job.last_verified_at = utcnow()
+    session.commit()
+    return 1
+
+
+def list_jobs_needing_enrichment(session: Session, limit: int = 25) -> List[Job]:
+    """Jobs with no description and an original_url to fetch."""
+    return (
+        session.query(Job)
+        .filter((Job.description.is_(None)) | (Job.description == ""))
+        .filter(Job.original_url.isnot(None))
+        .filter(Job.original_url != "")
+        .limit(limit)
+        .all()
+    )
+
+
 # ---- Candidate profile ----
 
 
