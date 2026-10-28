@@ -153,6 +153,72 @@ def render() -> None:
 
 
 def _render_forms(cfg: SearchConfig) -> None:
+    # --- Search intent (primary controls) ---
+    st.subheader("Search intent")
+    st.caption(
+        "The job title and location you enter here drive the hard-filter gate. "
+        "Jobs that don't match will be excluded before AI scoring runs."
+    )
+    ig1, ig2 = st.columns([2, 3])
+    with ig1:
+        cfg.primary_title = st.text_input(
+            "Primary job title",
+            value=cfg.primary_title,
+            key="primary_title",
+            placeholder="e.g. Python Developer, ML Engineer",
+            help="The exact role you're looking for. Set this to enable the title hard-filter.",
+        ).strip()
+        cfg.title_synonyms = _parse_int_list(
+            st.text_input(
+                "Title synonyms (comma separated, optional)",
+                value=", ".join(cfg.title_synonyms),
+                key="title_synonyms",
+                placeholder="e.g. Python Engineer, Python Developer Intern",
+            ),
+            "title synonyms",
+        )
+        cfg.excluded_titles = _parse_int_list(
+            st.text_input(
+                "Excluded titles (comma separated, optional)",
+                value=", ".join(cfg.excluded_titles),
+                key="excluded_titles",
+                placeholder="e.g. QA Engineer, Data Entry",
+            ),
+            "excluded titles",
+        )
+    with ig2:
+        # Locations: the main free-text field feeds SearchConfig.locations
+        # which build_intent() splits into (cities, countries) automatically.
+        _loc_val = st.text_input(
+            "Location(s) — city or city+country (e.g. Berlin, Germany)",
+            value=", ".join(cfg.locations),
+            key="locations_input",
+            placeholder="e.g. Berlin, Munich / Germany / Remote — EU",
+            help="Comma-separated. Leave blank for no location constraint.",
+        )
+        cfg.locations = _parse_int_list(_loc_val, "locations")
+        cfg.excluded_locations = _parse_int_list(
+            st.text_input(
+                "Excluded locations (optional)",
+                value=", ".join(cfg.excluded_locations),
+                key="excl_locations",
+            ),
+            "excluded locations",
+        )
+        ir1, ir2 = st.columns(2)
+        cfg.include_related_roles = ir1.toggle(
+            "Include related roles",
+            value=getattr(cfg, "include_related_roles", False),
+            key="include_related_roles",
+            help="e.g. also show 'Software Developer' when searching for 'Software Engineer'. Off by default for precision.",
+        )
+        cfg.require_verified_location = ir2.toggle(
+            "Require verified location",
+            value=getattr(cfg, "require_verified_location", False),
+            key="require_verified_location",
+            help="When on, jobs whose location cannot be confirmed are excluded. Off = show them tagged 'unverified'.",
+        )
+
     # --- Employment types ---
     st.subheader("Employment types")
     selected_types = [
@@ -231,23 +297,8 @@ def _render_forms(cfg: SearchConfig) -> None:
     cfg.industries = _parse_int_list(industries, "industries")
     cfg.phrases = _parse_int_list(phrases, "phrases")
 
-    # --- Locations ---
-    st.subheader("Locations")
+    # --- Languages only (locations/excluded_locations now live in Search intent above) ---
     lrow = st.columns(3)
-    with lrow[0]:
-        locations = st.text_area(
-            "Included locations",
-            value=", ".join(cfg.locations),
-            key="locations",
-            height=80,
-        )
-    with lrow[1]:
-        excluded_locations = st.text_area(
-            "Excluded locations",
-            value=", ".join(cfg.excluded_locations),
-            key="excl_locations",
-            height=80,
-        )
     with lrow[2]:
         languages = st.text_area(
             "Language requirements",
@@ -255,8 +306,6 @@ def _render_forms(cfg: SearchConfig) -> None:
             key="langs",
             height=80,
         )
-    cfg.locations = _parse_int_list(locations, "locations")
-    cfg.excluded_locations = _parse_int_list(excluded_locations, "excluded locations")
     cfg.language_requirements = _parse_int_list(languages, "languages")
 
     # --- Workplace arrangement ---
@@ -427,6 +476,9 @@ def _render_footer(cfg: SearchConfig) -> None:
     except Exception as exc:  # noqa: BLE001
         st.error(f"AI health check failed: {exc}")
 
+    # ---- Data management (one-click reset) ----
+    _render_data_management()
+
 
 def col_a_select(saved: List[str]):
     """Small multiselect wrapper for loading a saved profile (returns a string)."""
@@ -473,3 +525,64 @@ def _number_input(label, value, min_value=None, max_value=None, key=""):
     if min_value is None or (min_value == 0 and num == 0):
         return None if num == 0 and (label.startswith("Posted") or "Salary" in label or label.startswith("Min match")) else num
     return num
+
+
+# ---------------------------------------------------------------------------
+# Data management (one-click reset)
+# ---------------------------------------------------------------------------
+
+
+def _render_data_management() -> None:
+    """Render the reset card — same mechanics as the dashboard card, but here
+    it doesn't require a scan-running guard (the scan progress widget isn't
+    on this page, so we can't reliably detect a running scan from here)."""
+    from services.reset_service import execute_reset, plan_reset
+
+    st.subheader("Data management")
+    scope = st.radio(
+        "Reset scope",
+        options=["current", "all"],
+        format_func=lambda v: {
+            "current": "Clear current search results (latest scan only)",
+            "all": "Clear all job-search data (jobs, scans, source health, AI usage)",
+        }[v],
+        horizontal=True,
+        key="settings_reset_scope",
+    )
+    plan = None
+    try:
+        with util.with_session() as s:
+            plan = plan_reset(s, scope)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Could not compute reset plan: {exc}")
+        return
+
+    d = plan.to_dict()
+    st.caption(
+        f"Would remove: **{d['jobs']}** jobs, **{d['job_matches']}** job matches, "
+        f"**{d['applications']}** applications, **{d['generated_documents']}** "
+        f"generated documents, **{d['scan_records']}** scan records, "
+        f"**{d['source_health']}** source health rows, **{d['ai_usage']}** "
+        f"AI usage rows. **Total: {d['total']}** rows."
+    )
+    confirmed = st.checkbox(
+        "I understand the data listed above will be removed",
+        key="settings_reset_confirm",
+    )
+    if confirmed and st.button(
+        "Reset job-search data", type="primary", use_container_width=True,
+        key="settings_reset_button",
+    ):
+        try:
+            with util.with_session() as s:
+                plan2 = plan_reset(s, scope)
+                result = execute_reset(s, plan=plan2)
+            if result.success:
+                st.session_state.pop("scan_result", None)
+                st.session_state.pop("scan_progress", None)
+                st.session_state.pop("job_id", None)
+                st.success("Reset complete.")
+            else:
+                st.error(f"Reset failed and was rolled back: {result.error}")
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Reset failed: {type(exc).__name__}: {exc}")
