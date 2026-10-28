@@ -96,6 +96,27 @@ class SearchConfig(BaseModel):
     worldwide_remote: bool = False
     language_requirements: List[str] = Field(default_factory=list)
 
+    # -- P2: Search intent (primary title + synonym overrides) --
+    # User-specified primary job title. When empty, the pipeline falls back
+    # to keyword-based title relevance only (no hard title gate).
+    primary_title: str = ""
+    # User-specified synonyms treated as equivalent to primary_title.
+    # Existing exact/near synonyms are covered by title_matching.SYNONYM_MAP.
+    title_synonyms: List[str] = Field(default_factory=list)
+    # Roles to exclude (case-insensitive substring match on job title).
+    excluded_titles: List[str] = Field(default_factory=list)
+    # When True, "related" tier title matches are shown alongside
+    # "strong"/"exact" matches.  Default off — only strongly relevant.
+    include_related_roles: bool = False
+    # When True, only jobs whose location_status is "match" are shown.
+    # Jobs with location_status "unknown" are rejected when this is True,
+    # and accepted (tagged unverified) when False.
+    require_verified_location: bool = False
+    # Minimum token-Jaccard overlap for a "strong" title tier.
+    min_title_jaccard: float = 0.60
+    # Minimum structured-location confidence for a "match" status.
+    min_location_confidence: float = 0.70
+
     posted_within_days: Optional[int] = None
     salary_min: Optional[float] = None
     salary_max: Optional[float] = None
