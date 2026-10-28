@@ -26,6 +26,9 @@ def upgrade(engine: Engine) -> None:
             "last_verified_at": "DATETIME",
             "application_method": "VARCHAR(60)",
             "scam_risk_flags": "TEXT",
+            "title_relevance": "VARCHAR(20)",
+            "location_status": "VARCHAR(20)",
+            "match_explanation": "TEXT",
         }
         for col, coltype in job_cols.items():
             if not _column_exists(engine, "jobs", col):
