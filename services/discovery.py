@@ -40,6 +40,11 @@ class DiscoverySummary:
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     duration_seconds: float = 0.0
+    enrichment_attempted: int = 0
+    enrichment_succeeded: int = 0
+    enrichment_failed: int = 0
+    enrichment_skipped: int = 0
+    enrichment_avg_confidence: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -54,6 +59,13 @@ class DiscoverySummary:
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "duration_seconds": self.duration_seconds,
+            "enrichment": {
+                "attempted": self.enrichment_attempted,
+                "succeeded": self.enrichment_succeeded,
+                "failed": self.enrichment_failed,
+                "skipped": self.enrichment_skipped,
+                "avg_confidence": self.enrichment_avg_confidence,
+            },
         }
 
 
@@ -148,6 +160,22 @@ def run_discovery(
         {"job_id": j.id, "title": j.title, "company": j.company, "reason": r}
         for (j, r) in excluded
     ]
+
+    # Step 3b: detail-page enrichment (populates missing description/fields)
+    if getattr(cfg, "enable_detail_extraction", True):
+        try:
+            from services.enrichment_service import enrich_missing_jobs
+
+            enrich_ids = [j.id for j in eligible if not (j.description and (j.description or "").strip())]
+            if enrich_ids:
+                esum = enrich_missing_jobs(session, cfg, job_ids=enrich_ids)
+                summary.enrichment_attempted = esum.attempted
+                summary.enrichment_succeeded = esum.succeeded
+                summary.enrichment_failed = esum.failed
+                summary.enrichment_skipped = esum.skipped
+                summary.enrichment_avg_confidence = esum.avg_confidence
+        except Exception:
+            log.exception("enrichment step failed (non-fatal)")
 
     # Step 4: (optional) Gemini evaluation
     if evaluate_with_gemini:
