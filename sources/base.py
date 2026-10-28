@@ -19,7 +19,9 @@ class RawListing:
 
     source: str
     title: str
-    company: str
+    # Required for the abstract RawListing signature (company may be
+    # genuinely unknown — e.g. Hacker News job listings).
+    company: Optional[str]
     location: Optional[str] = None
     country: Optional[str] = None
     description_html: Optional[str] = None
@@ -34,13 +36,33 @@ class RawListing:
     salary: Optional[str] = None
     industry: Optional[str] = None
     original_url: str = ""
+    # Canonical / dedup URL: the URL after any search-engine or ATS
+    # redirect (e.g. DDG's ``/l/?uddg=...``).  Used as the
+    # de-duplication key; ``original_url`` is kept as-is for provenance.
+    canonical_url: Optional[str] = None
     application_url: Optional[str] = None
     published_at: Optional[str] = None  # ISO 8601 or raw
-    # PROVIDER provenance — records *which* search provider surfaced this hit
-    # (e.g. "brave", "duckduckgo") and *which* query string matched, so the
-    # scan UI can report API usage / provider coverage (spec §10).
-    provider: Optional[str] = None
-    provider_query: Optional[str] = None
+    # --- max-coverage discovery engine: provenance + quality signals ---
+    # The search provider that produced this result (e.g. "brave",
+    # "duckduckgo"), plus the query string that matched.
+    search_provider: Optional[str] = None
+    search_query: Optional[str] = None
+    # Detail-page extraction succeeded to some level?  ``True`` when
+    # the description was extracted from the listing page (vs. only
+    # the search snippet), ``False`` when only the snippet is available.
+    detail_extraction_succeeded: bool = False
+
+    def dedup_key(self) -> str:
+        """Best available de-duplication key.
+
+        Order: ``canonical_url`` → ``application_url`` →
+        ``original_url`` → empty string.  Callers can
+        ``if not job.dedup_key(): continue``.
+        """
+        for key in (self.canonical_url, self.application_url, self.original_url):
+            if key and key.strip():
+                return key.strip()
+        return ""
 
     def text_description(self) -> Optional[str]:
         """Textifcatif the description (stored as text field)."""
@@ -61,6 +83,23 @@ class SourceResult:
     listings_found: int = 0
     listings_new: int = 0
     cache_ttl: int = 0
+    # --- per-source fidelity counters (spec §10 scan diagnostics) ---
+    # ``attempted``  - number of sub-requests the source made
+    #                (e.g. one *per query* for web_search, one *per board*
+    #                for greenhouse).
+    # ``fetched``    - of the attempted ones, how many returned HTTP 200
+    #                (for web_search: queries that *found* at least one
+    #                listing; for greenhouse/lever: boards with 200+JSON).
+    # ``parsed``     - number of :class:`RawListing` instances extracted.
+    # ``duplicates`` - listings discarded because ``dedup_key`` was already
+    #                seen in this source's run.
+    # ``failed``     - attempted requests that errored out / returned
+    #                non-200.
+    attempted: int = 0
+    fetched: int = 0
+    parsed: int = 0
+    duplicates: int = 0
+    failed: int = 0
 
     def details(self) -> dict:
         return {
@@ -68,6 +107,11 @@ class SourceResult:
             "listings_found": self.listings_found,
             "listings_new": self.listings_new,
             "error": self.error_message,
+            "attempted": self.attempted,
+            "fetched": self.fetched,
+            "parsed": self.parsed,
+            "duplicates": self.duplicates,
+            "failed": self.failed,
         }
 
 
@@ -104,8 +148,14 @@ class JobSource(abc.ABC):
     def apply_filters(self, cfg: SearchConfig, listings: List[RawListing]) -> List[RawListing]:
         lower_inc = [k.lower() for k in cfg.include_keywords]
         lower_excl = [k.lower() for k in cfg.exclude_keywords]
-        lower_locs = [loc.lower().strip() for loc in cfg.locations if loc and loc.strip()]
-        lower_exl_locs = [loc.lower().strip() for loc in cfg.excluded_locations if loc and loc.strip()]
+        lower_locs: list = []
+        lower_exl_locs: list = []
+        # NOTE: cfg.locations / cfg.excluded_locations may not exist in
+        # SearchConfig — access defensively via getattr.
+        _cfg_locs = getattr(cfg, "locations", None) or []
+        _cfg_exl_locs = getattr(cfg, "excluded_locations", None) or []
+        lower_locs = [loc.lower().strip() for loc in _cfg_locs if loc and loc.strip()]
+        lower_exl_locs = [loc.lower().strip() for loc in _cfg_exl_locs if loc and loc.strip()]
         require_workplace = any(
             (cfg.include_remote, cfg.include_hybrid, cfg.include_onsite, cfg.worldwide_remote)
         )
