@@ -17,6 +17,7 @@ import streamlit as st
 from config.runtime_settings import load_search_config
 from config.search_config import SearchConfig, default_search_config
 from services.gemini_client import GeminiClient
+from services.reset_service import execute_reset, plan_reset, ResetPlan
 from services.scheduler import OnDemandScheduler
 from ui import util
 
@@ -247,11 +248,23 @@ def render() -> None:
         color = {"done": "green", "partial": "orange", "error": "red"}.get(status, "gray")
         with st.container(border=True):
             st.markdown(f"Last scan: **{status}** — {color}")
-            st.write(
-                f"- Total discovered: {result.get('total_discovered', 0)}  "
-                f"- New: {result.get('new_jobs', 0)}  "
-                f"- Duplicates: {result.get('duplicates', 0)}"
-            )
+            # Stage counters — only show values the scan actually produced
+            total_disc  = result.get("total_discovered", 0)
+            new_jobs    = result.get("new_jobs", 0)
+            dups        = result.get("duplicates", 0)
+            excluded    = len(result.get("excluded") or [])
+            failed_src  = len(result.get("failures") or [])
+            scanned_src = len(result.get("per_source") or {})
+            s1, s2, s3, s4, s5, s6 = st.columns(6)
+            s1.metric("Discovered", total_disc, delta=f"-{dups} dups" if dups else None)
+            s2.metric("New jobs", new_jobs)
+            s3.metric("Filtered out", excluded if excluded else "—",
+                      help="Jobs removed by hard filters (title, location, employment type).")
+            s4.metric("AI skipped", "—",
+                      help="Jobs removed by the deterministic hard-filter before AI scoring (logged in run log).")
+            s5.metric("Sources OK", scanned_src - failed_src if failed_src else scanned_src)
+            s6.metric("Sources failed", failed_src,
+                      help="Sources that errored; scan continued with remaining sources.")
             fails = result.get("failures") or []
             if fails:
                 st.markdown("**Failures:**")
@@ -259,6 +272,9 @@ def render() -> None:
             _render_source_diagnostics(result)
             if st.button("Dismiss scan result"):
                 st.session_state.pop("scan_result", None)
+
+    # ---- Data reset (one-click) ------------------------------------
+    _render_data_management(job_rows)
 
     # ---- Last scan header / stats board ----------------------------
     if last_scan is None:
@@ -350,6 +366,122 @@ def _render_recent_applications(apps: List[Dict[str, Any]]) -> None:
         for r in apps[:12]
     ]
     st.dataframe(display, use_container_width=True, hide_index=True)
+
+
+# ---------------------------------------------------------------------------
+# Data management (one-click reset)
+# ---------------------------------------------------------------------------
+
+
+def _render_data_management(job_rows: List[Dict[str, Any]]) -> None:
+    """Render the reset card with two-level confirmation."""
+    st.subheader("Data management")
+
+    # Guard: a running scan means the reset would race with a writer.
+    if _progress_target().get("active"):
+        st.warning(
+            "A scan is in progress. Stop the scan first to reset the database."
+        )
+        return
+
+    scope = st.radio(
+        "Reset scope",
+        options=["current", "all"],
+        format_func=lambda v: {
+            "current": "Clear current search results (latest scan only)",
+            "all": "Clear all job-search data (jobs, scans, source health, AI usage)",
+        }[v],
+        horizontal=True,
+        key="reset_scope",
+    )
+
+    # Plan: how many rows would be affected?
+    plan: Optional["ResetPlan"] = None
+    try:
+        with util.with_session() as s:
+            plan = plan_reset(s, scope)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Could not compute reset plan: {exc}")
+        return
+
+    d = plan.to_dict()
+    st.caption(
+        f"Would remove: **{d['jobs']}** jobs, **{d['job_matches']}** job matches, "
+        f"**{d['applications']}** applications, **{d['generated_documents']}** "
+        f"generated documents, **{d['scan_records']}** scan records, "
+        f"**{d['source_health']}** source health rows, **{d['ai_usage']}** AI usage "
+        f"rows. **Total: {d['total']}** rows."
+        + (
+            f" ({d['running_scans_cancelled']} running scan cancelled before plan)"
+            if d.get("running_scans_cancelled")
+            else ""
+        )
+    )
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown(
+            "**Preserved (never deleted):**"
+        )
+        st.caption(
+            "Candidate profiles, saved CVs, cover letters, application "
+            "tracking notes, search settings and named profiles, and the "
+            "registry of discovered job sources."
+        )
+    with col_b:
+        st.markdown(
+            "**Removed:** "
+            + ("the most recent scan and jobs it produced."
+               if scope == "current" else
+               "all job-search rows (jobs, matches, applications, "
+                  "generated documents, scans, source health, AI usage).")
+        )
+
+    checkbox_text = (
+        "I understand the above data will be removed"
+        if scope == "all" else
+        "I understand only the latest scan and its jobs will be removed"
+    )
+    confirmed = st.checkbox(checkbox_text, key="reset_confirm")
+    if confirmed and st.button(
+        "Reset job-search data", type="primary", use_container_width=True,
+        key="reset_confirm_button",
+    ):
+        try:
+            with util.with_session() as s:
+                # Re-plan so we reflect the live DB state immediately
+                # before executing; reuse the same session for atomicity.
+                plan2 = plan_reset(s, scope)
+                result = execute_reset(s, plan=plan2)
+            if result.success:
+                _post_reset_cleanup()
+                st.success(
+                    "Reset complete. Removed "
+                    f"{_total_removed(result)} rows. "
+                    "Start a new scan to repopulate."
+                )
+            else:
+                st.error(
+                    "Reset failed and was rolled back. "
+                    f"Error: {result.error}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Reset failed: {type(exc).__name__}: {exc}")
+
+
+def _total_removed(result) -> int:
+    deleted = result.deleted or {}
+    return sum(
+        v for v in deleted.values() if isinstance(v, int)
+    )
+
+
+def _post_reset_cleanup() -> None:
+    """Clear all Streamlit-side caches that could resurrect deleted jobs."""
+    st.session_state.pop("scan_result", None)
+    st.session_state.pop("scan_progress", None)
+    st.session_state.pop("job_id", None)
+    # The activity log entry can stay — it records what the user did.
 
 
 
