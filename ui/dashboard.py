@@ -122,6 +122,67 @@ def _stop_scan() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _source_diagnostic_rows(per_source: dict) -> List[Dict[str, Any]]:
+    """Convert a per_source dict (from DiscoverySummary.to_dict) into
+    flat, category-tagged rows for the diagnostics table."""
+    rows: List[Dict[str, Any]] = []
+    for name, data in per_source.items():
+        if not name:
+            continue
+        if not isinstance(data, dict):
+            continue
+        success = bool(data.get("success"))
+        failed = int(data.get("failed", 0) or 0)
+        attempted = int(data.get("attempted", 0) or 0)
+        if not success and attempted == 0:
+            status = "Skipped"
+        elif success and failed == 0:
+            status = "Success"
+        elif success and failed > 0:
+            status = "Partial"
+        else:
+            status = "Failed"
+        err = (data.get("error") or data.get("error_message") or "") or ""
+        if len(err) > 100:
+            err = err[:100] + "..."
+        rows.append({
+            "Source": name,
+            "Status": status,
+            "Attempted": attempted,
+            "Fetched": int(data.get("fetched", 0) or 0),
+            "Parsed": int(data.get("parsed", 0) or 0),
+            "Duplicates": int(data.get("duplicates", 0) or 0),
+            "Listings": int(data.get("listings_found", 0) or 0),
+            "Failed": failed,
+            "Error": err,
+        })
+    return rows
+
+
+def _render_source_diagnostics(result: dict) -> None:
+    """Render per-source diagnostics from a scan result dict.
+
+    Reads ``result["per_source"]`` (a dict of {source_name: SourceResult.details()}).
+    Renders a dataframe inside a st.expander, with error text shown truncated
+    (full text remains in the ``Error`` column, which streamlit can scroll
+    horizontally to read).
+    """
+    per_source = result.get("per_source") or {}
+    if not per_source:
+        return
+    try:
+        import pandas as pd
+    except Exception:
+        # pandas is a streamlit local requirement, so this branch is rare.
+        st.dataframe(list(per_source.items()))
+        return
+    rows = _source_diagnostic_rows(per_source)
+    if not rows:
+        return
+    with st.expander("Source diagnostics"):
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
 def render() -> None:
     st.title("Overview")
     st.caption("Job Hunt Agent — local-first, AI-assisted job discovery.")
@@ -195,6 +256,7 @@ def render() -> None:
             if fails:
                 st.markdown("**Failures:**")
                 st.dataframe(fails, use_container_width=True)
+            _render_source_diagnostics(result)
             if st.button("Dismiss scan result"):
                 st.session_state.pop("scan_result", None)
 
