@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from config.search_config import SearchConfig
 from services.logger import get_logger
+from services.query_planner import plan_queries
 from sources.base import RawListing, SourceResult
 from sources.registry import ensure_loaded, list_sources
+from sources.search_providers import SearchProvider, get_search_provider
 
 log = get_logger("jobhunter.sources")
 
@@ -23,6 +26,12 @@ class ScanSummary:
     per_source: Dict[str, SourceResult] = field(default_factory=dict)
     all_listings: List[RawListing] = field(default_factory=list)
     status: str = "running"  # done | error | partial
+    # New: scan-level diagnostics surfaced in the scan-history UI.
+    scan_started_at: float = 0.0
+    scan_duration_seconds: float = 0.0
+    queries_executed: int = 0
+    # Per source {name: {attempted, fetched, parsed, duplicates, failed}}
+    per_source_counts: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
     def detail(self) -> Dict[str, Any]:
         return {
@@ -32,13 +41,28 @@ class ScanSummary:
             "status": self.status,
             "failures": len(self.failures),
             "listings": len(self.all_listings),
+            "scan_duration_seconds": round(self.scan_duration_seconds, 1),
+            "queries_executed": self.queries_executed,
+            "per_source": {
+                name: sr.details()
+                for name, sr in self.per_source.items()
+            },
         }
 
 
 class SearchEngine:
-    """Run enabled sources in parallel; respect `max_results` per source."""
+    """Run enabled sources in parallel; respect ``max_results`` per source.
 
-    def __init__(self, *, max_workers: int = 4, max_sources: int = 8):
+    The engine accepts an *optional* pre-computed query plan and a
+    *search provider*.  When neither is supplied it resolves both
+    from the user's :class:`SearchConfig` + :class:`AppConfig`
+    defaults (same behaviour as a bare scan).  This lets callers
+    (e.g. the UI's "scan now" button) share one provider instance
+    across the entire scan (brings the rate-limit benefit) instead
+    of letting each source spin up its own.
+    """
+
+    def __init__(self, *, max_workers: int = 5, max_sources: int = 8):
         self.max_workers = max(1, int(max_workers))
         self.max_sources = max(1, int(max_sources))
 
@@ -47,12 +71,14 @@ class SearchEngine:
         cfg: SearchConfig,
         *,
         on_progress: Optional[Callable[[int, str], None]] = None,
+        provider: Optional[SearchProvider] = None,
+        profile: Any = None,
     ) -> ScanSummary:
         # Ensure all registered source adapters are loaded into REGISTRY
         # (fires the @register decorators on first scan from any caller).
         ensure_loaded()
         enabled = list_sources()
-        # Filter by `cfg.enabled_sources`
+        # Filter by ``cfg.enabled_sources``
         if cfg.enabled_sources:
             enabled = [s for s in enabled if s.name in cfg.enabled_sources or s.slug in cfg.enabled_sources]
         # Cap number of sources
@@ -63,15 +89,43 @@ class SearchEngine:
                 {"source": "<none>", "error": "no enabled sources"}
             ])
 
+        # -- lazy resolution of the search provider (shared) --------
+        if provider is None:
+            provider = get_search_provider(cfg)
+        plan = plan_queries(cfg, profile=profile) if profile else plan_queries(cfg)
+
         summary = ScanSummary(
             total_discovered=0,
             status="running",
+            scan_started_at=time.monotonic(),
+            queries_executed=len(plan),
         )
-        seen_urls = set()
+        seen_urls: set[str] = set()
         total = len(enabled)
 
         def _run_one(source):
             try:
+                # Only the web-search source understands the query
+                # plan and the provider.  For all other sources
+                # (greenhouse, lever, rss, career_pages) we call
+                # scan() the untouched way — the provider/plan
+                # don't apply to them.
+                if provider is not None and plan is not None:
+                    if getattr(source, "slug", "") == "web_search":
+                        # Build a source that knows about the provider
+                        # + plan (WebSearchSource.__init__ accepts
+                        # ``provider``; the plan is read from cfg's
+                        # ``search_provider``).
+                        from sources.web_search import WebSearchSource
+                        if (isinstance(source, WebSearchSource)
+                                and source._provider is None):
+                            source._provider = provider
+                            source._provider_resolved = True
+                    elif getattr(source, "slug", "") not in (
+                        "web_search",
+                    ):
+                        pass
+
                 return source, source.scan(cfg)
             except Exception as exc:  # broadband
                 log.warning("Source %s crashed: %s", source.name, exc)
@@ -93,14 +147,25 @@ class SearchEngine:
                     continue
 
                 summary.per_source[source.name] = result
+                summary.per_source_counts[source.name] = {
+                    "attempted": result.attempted,
+                    "fetched": result.fetched,
+                    "parsed": result.parsed,
+                    "duplicates": result.duplicates,
+                    "failed": result.failed,
+                }
                 if result.success:
                     for item in result.listings:
-                        if item.original_url in seen_urls:
+                        key = item.dedup_key()
+                        if key in seen_urls:
                             continue
-                        seen_urls.add(item.original_url)
+                        seen_urls.add(key)
                         summary.all_listings.append(item)
                     summary.total_discovered += len(result.listings)
                 else:
+                    # Per-source failure must NOT discard the
+                    # *other* sources' results.  Record it and
+                    # continue.
                     summary.failures.append({
                         "source": source.name,
                         "error": result.error_message,
@@ -108,10 +173,15 @@ class SearchEngine:
                 if on_progress:
                     on_progress(i, "ok" if result.success else "partial")
                 log.info(
-                    "Source %s: found=%d success=%s",
+                    "Source %s: found=%d success=%s (attempted=%d fetched=%d parsed=%d dup=%d failed=%d)",
                     source.name,
                     len(result.listings),
                     result.success,
+                    result.attempted,
+                    result.fetched,
+                    result.parsed,
+                    result.duplicates,
+                    result.failed,
                 )
 
         # Decide overall status
@@ -125,6 +195,7 @@ class SearchEngine:
             summary.status = (
                 "error" if not summary.total_discovered else "partial"
             )
+        summary.scan_duration_seconds = time.monotonic() - summary.scan_started_at
         if on_progress:
             on_progress(total, "done")
         log.info("Scan finished: %s", summary.detail())
