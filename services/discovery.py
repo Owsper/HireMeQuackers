@@ -10,6 +10,7 @@ from config.search_config import SearchConfig
 from database import repository as db
 from database.connection import get_engine, get_session
 from database.models import CandidateProfile, Job, utcnow
+from config.search_intent import build_intent
 from services.deduplication import primary_hard_match, secondary_similarity
 from services.filters import apply_filters
 from services.gemini_client import GeminiClient
@@ -154,8 +155,14 @@ def run_discovery(
     summary.new_jobs = new_jobs
     summary.duplicates = duplicates
 
-    # Step 3: deterministic filters
-    matched, excluded = apply_filters(eligible, cfg)
+    # Step 3: deterministic filters, with a structured search intent so
+    # the title / location hard constraints run *before* the loose
+    # keyword pass.
+    intent = build_intent(
+        cfg,
+        include_related_titles=bool(cfg.include_related_roles),
+    )
+    matched, excluded = apply_filters(eligible, cfg, intent=intent)
     summary.matched_jobs = matched
     summary.excluded = [
         {"job_id": j.id, "title": j.title, "company": j.company, "reason": r}
@@ -185,7 +192,7 @@ def run_discovery(
             # Refresh jobs (session.commit lazy)
             from services.matching import evaluate_jobs
 
-            evaluate_jobs(matched, profile, on_progress=_progress)
+            evaluate_jobs(matched, profile, on_progress=_progress, intent=intent, cfg=cfg)
 
     # Step 5: finish scan record
     summary.status = "done" if scan_summary.status in ("done", "partial") else "error"
