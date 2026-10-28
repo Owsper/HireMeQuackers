@@ -62,6 +62,9 @@ def _eager_load() -> None:
         "sources.greenhouse",
         "sources.lever",
         "sources.rss",
+        "sources.remoteok",
+        "sources.hackernews",
+        "sources.eures",
         "sources.career_pages",
         "sources.web_search",
     )
