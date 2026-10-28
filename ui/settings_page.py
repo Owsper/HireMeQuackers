@@ -386,7 +386,7 @@ def _render_footer(cfg: SearchConfig) -> None:
     apply_share_ok = False
     if left.button("Apply + persist to live settings", type="primary", use_container_width=True):
         try:
-            cfg.validate()
+            _revalidate_model(cfg)
         except Exception as exc:
             st.error(f"Validation failed: {exc}")
             return
@@ -403,7 +403,7 @@ def _render_footer(cfg: SearchConfig) -> None:
     save_as_btn = right.button("Save as profile", use_container_width=True)
     if save_as_btn and profile_name:
         try:
-            cfg.validate()
+            _revalidate_model(cfg)
         except Exception as exc:
             st.error(f"Validation failed: {exc}")
             return
@@ -439,6 +439,24 @@ def col_a_select(saved: List[str]):
 
 def col_b(x):  # no-op (kept for clarity)
     return None
+
+
+def _revalidate_model(cfg: SearchConfig) -> None:
+    """Re-run Pydantic field validation on an already-built config instance.
+
+    The old settings page called the Pydantic v1 ``validate`` classmethod
+    on an instance (``cfg.<keyword-less-call>``), which under Pydantic v2
+    raises ``missing 1 required positional argument``.  This helper picks
+    the right revalidation call at runtime so v1-style and v2-style
+    models both validate their current values (catching bad states the
+    form widgets assigned during the render pass) before the config is
+    persisted.
+    """
+    revalidate = getattr(cfg, "model_revalidate", None) or getattr(cfg, "revalidate", None)
+    if callable(revalidate):
+        revalidate()
+    else:
+        SearchConfig.model_validate(cfg, strict=False)
 
 
 def _number_input(label, value, min_value=None, max_value=None, key=""):
