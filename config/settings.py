@@ -23,7 +23,6 @@ def _load_env_file() -> None:
     """Load .env file from project root (idempotent)."""
     if load_dotenv is None:
         return
-    # Load from project root and cwd
     for base in (PROJECT_ROOT, Path.cwd()):
         env_file = base / ".env"
         if env_file.exists():
@@ -39,6 +38,10 @@ class AppConfig(BaseModel):
 
     All fields have sane defaults; missing values are populated from
     environment (and .env) using env-var names in UPPERCASE.
+
+    The discovery-engine fields (search_provider, brave_search_api_key, etc.)
+    are process-level *defaults*.  Per-search values live on
+    ``SearchConfig`` in :mod:`config.search_config` (user-authored).
     """
 
     app_env: str = "local"
@@ -60,19 +63,20 @@ class AppConfig(BaseModel):
     scan_max_sources: int = 8
     scan_request_cap_per_source: int = 30
 
-    # --- max-coverage discovery engine (Phase 2) ---
-    # Search-provider credentials are OPTIONAL. The app must still start and
-    # scan (with DuckDuckGo HTML fallback) when none of these are provided.
-    brave_search_api_key: Optional[str] = None
-    exa_api_key: Optional[str] = None
+    # -- max-coverage discovery engine (process-level defaults) --
     search_provider: str = "brave"  # brave | exa | duckduckgo
+    brave_search_api_key: str = ""
+    exa_api_key: str = ""
     scan_budget_seconds: float = 300.0
     scan_max_total_queries: int = 40
-    scan_max_page_fetches: int = 120  # hard ceiling on detail-page fetches
-    search_min_delay_seconds: float = 1.0  # per-provider rate-limit floor
+    enrichment_max_per_scan: int = 25
+    enrichment_delay_seconds: float = 1.5
 
     enable_pdf_export: bool = True
     enable_playwright: bool = False
+
+    # Optional EURES public API endpoint.  None => EURES source skipped.
+    eures_api_url: Optional[str] = None
 
     @field_validator("data_dir")
     @classmethod
@@ -120,13 +124,14 @@ def get_config() -> AppConfig:
         max_response_bytes=_env_int("MAX_RESPONSE_BYTES", 3 * 1024 * 1024),
         scan_max_sources=_env_int("SCAN_MAX_SOURCES", 8),
         scan_request_cap_per_source=_env_int("SCAN_REQUEST_CAP_PER_SOURCE", 30),
-        brave_search_api_key=(_env("BRAVE_SEARCH_API_KEY", "") or None),
-        exa_api_key=(_env("EXA_API_KEY", "") or None),
-        search_provider=_env("SEARCH_PROVIDER", "brave").strip().lower() or "brave",
+        search_provider=_env("SEARCH_PROVIDER", "brave"),
+        brave_search_api_key=_env("BRAVE_SEARCH_API_KEY", ""),
+        exa_api_key=_env("EXA_API_KEY", ""),
         scan_budget_seconds=_env_float("SCAN_BUDGET_SECONDS", 300.0),
         scan_max_total_queries=_env_int("SCAN_MAX_TOTAL_QUERIES", 40),
-        scan_max_page_fetches=_env_int("SCAN_MAX_PAGE_FETCHES", 120),
-        search_min_delay_seconds=_env_float("SEARCH_MIN_DELAY_SECONDS", 1.0),
+        enrichment_max_per_scan=_env_int("ENRICHMENT_MAX_PER_SCAN", 25),
+        enrichment_delay_seconds=_env_float("ENRICHMENT_DELAY_SECONDS", 1.5),
         enable_pdf_export=_env_bool("ENABLE_PDF_EXPORT", True),
         enable_playwright=_env_bool("ENABLE_PLAYWRIGHT", False),
+        eures_api_url=_env("EURES_API_URL", "") or None,
     )
