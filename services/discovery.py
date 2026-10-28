@@ -66,6 +66,7 @@ class DiscoverySummary:
                 "skipped": self.enrichment_skipped,
                 "avg_confidence": self.enrichment_avg_confidence,
             },
+            "per_source": self.per_source,
         }
 
 
