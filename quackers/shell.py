@@ -222,7 +222,7 @@ def slash_completions(text: str, tree: CommandTree):
 
 def handle_line(line: str, tree: CommandTree, agent) -> bool:
     """Process one input line. Returns False when the user wants to exit."""
-    line = line.replace("Feff", "").strip()  # PowerShell pipes prepend a BOM
+    line = line.replace("﻿", "").strip()  # PowerShell pipes prepend a BOM
     if not line:
         return True
     if line.startswith("/"):
