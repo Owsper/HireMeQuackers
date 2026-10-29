@@ -141,7 +141,7 @@ All settings live in `.env` in the project root and **all are optional** — the
 app runs without any of them. The easiest way to create or edit it:
 
 ```bash
-quackers quacker setenv        # or /quacker setenv inside the interactive session
+quackers env                   # or /env inside the interactive session
 ```
 
 It explains each setting, creates `.env` from the template if it is missing,
@@ -496,7 +496,7 @@ Test files (created in `tests/`):
 - `test_dashboard_diagnostics.py` — per-source diagnostics status rows (`quackers scan`)
 - `test_cli.py` — command routing, config coercion, terminal-output sanitising
 - `test_shell.py` — interactive session, slash completion, Gemini tool loop (faked)
-- `test_setenv.py` — banner, `quacker setenv` flows, .env parsing / atomic writes / precedence
+- `test_setenv.py` — banner, `env` flows, .env parsing / atomic writes / precedence
 - `test_sources_new.py` — RemoteOK, HackerNews, EURES adapters
 - `test_feed_registry.py` — bundled RSS feed list
 
@@ -702,7 +702,7 @@ HireMeQuackers/
 │   ├── shell.py            # interactive session (`quackers` with no arguments)
 │   ├── agent.py            # Gemini natural-language mode (tools = CLI commands)
 │   ├── banner.py           # ASCII-art banner for the interactive session
-│   ├── envfile.py          # .env template, validation and safe writes (quacker setenv)
+│   ├── envfile.py          # .env template, validation and safe writes (`env` command)
 │   ├── store.py            # DB session + row-to-dict helpers used by the commands
 │   ├── term.py             # Terminal output: tables, colours, prompts, control-char stripping
 │   └── __main__.py         # `python -m quackers`

@@ -1,4 +1,4 @@
-"""Tests for the ASCII banner and `quackers quacker setenv` (.env editing).
+"""Tests for the ASCII banner and `quackers env` (.env editing).
 
 Everything runs against temporary directories with a mocked editor and
 fake credentials; the real project `.env` is never touched.
@@ -165,7 +165,7 @@ def test_git_tracks_detects_tracked_env(tmp_path):
 
 @pytest.fixture
 def setenv(monkeypatch, tmp_path):
-    """Run `quacker setenv` against tmp_path/.env with scripted input and editor."""
+    """Run `env` against tmp_path/.env with scripted input and editor."""
     path = tmp_path / ".env"
     monkeypatch.setattr(envfile, "env_path", lambda: path)
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
@@ -189,7 +189,7 @@ def setenv(monkeypatch, tmp_path):
     monkeypatch.setattr(term, "edit_text", fake_edit)
 
     def run():
-        cli.cmd_quacker_setenv(cli.build_parser().parse_args(["quacker", "setenv"]))
+        cli.cmd_env(cli.build_parser().parse_args(["env"]))
 
     state["run"], state["path"] = run, path
     return state
@@ -302,25 +302,25 @@ def test_tracked_env_triggers_warning(setenv, monkeypatch, capsys):
 def test_non_interactive_refuses_with_path(monkeypatch):
     monkeypatch.setattr(cli, "_is_interactive", lambda: False)
     with pytest.raises(cli.CliError, match=r"needs a terminal(.|\n)*\.env"):
-        cli.cmd_quacker_setenv(None)
+        cli.cmd_env(None)
 
 
 def test_command_is_registered_for_slash_completion():
     tree = shell.command_tree(cli.build_parser())
-    assert "setenv" in tree["quacker"][1]
-    assert [c[0] for c in shell.slash_completions("/quacker se", tree)] == ["setenv"]
+    assert "env" in tree and "quacker" not in tree
+    assert "env" in [c[0] for c in shell.slash_completions("/en", tree)]
 
 
 def test_ai_agent_cannot_edit_env():
     from quackers import agent
 
     for name, (_, schema, _) in agent.TOOLS.items():
-        assert "quacker" not in name
+        assert "env" not in name.split("_")
         args = {k: 1 if k == "job_id" else ["A=1"] if k == "settings" else "x"
                 for k in schema.get("required", [])}
         if name == "set_application_status":
             args["status"] = "SHORTLISTED"
-        assert agent.build_argv(name, args)[0] != "quacker"
+        assert agent.build_argv(name, args)[0] != "env"
 
 
 # ---- real editor plumbing (term.edit_text) -------------------------------------

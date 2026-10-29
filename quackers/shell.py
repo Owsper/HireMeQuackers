@@ -113,7 +113,7 @@ def banner(agent) -> None:
     else:
         who = "none — /cv <file.pdf|.docx|.json>"
     ai = (term.style(f"on ({agent.model})", "green") if agent.available
-          else term.style(f"off — {agent.unavailable_reason} (/quacker setenv)", "yellow"))
+          else term.style(f"off — {agent.unavailable_reason} (/env)", "yellow"))
     print()
     for line in art.render(_width()):
         print(line)

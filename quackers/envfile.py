@@ -1,4 +1,4 @@
-"""`.env` handling for `quackers quacker setenv`.
+"""`.env` handling for `quackers env`.
 
 The app loads `<project root>/.env` through python-dotenv in
 `config.settings._load_env_file` (override=False, so variables already set
@@ -72,7 +72,7 @@ def template() -> str:
     """Commented starter `.env` (also published as `.env.example`)."""
     lines = [
         "# HireMeQuackers configuration",
-        "# Edit with `quackers quacker setenv`. This file holds secrets: never commit it.",
+        "# Edit with `quackers env`. This file holds secrets: never commit it.",
         "# Every setting is optional. Variables already set in your OS environment win.",
         "# Lines starting with # are ignored; remove the # to activate a setting.",
     ]
@@ -220,7 +220,7 @@ def ensure_gitignored(root: Path) -> bool:
     existing = gi.read_text(encoding="utf-8") if gi.exists() else ""
     sep = "" if not existing or existing.endswith("\n") else "\n"
     with gi.open("a", encoding="utf-8") as fh:
-        fh.write(f"{sep}\n# Local secrets (quackers quacker setenv)\n.env\n")
+        fh.write(f"{sep}\n# Local secrets (quackers env)\n.env\n")
     return True
 
 

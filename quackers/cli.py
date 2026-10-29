@@ -1301,7 +1301,7 @@ def cmd_reset(args) -> None:
 
 
 # ---------------------------------------------------------------------------
-# quacker setenv
+# env (.env editor)
 # ---------------------------------------------------------------------------
 
 
@@ -1345,12 +1345,12 @@ def _is_interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def cmd_quacker_setenv(args) -> None:
+def cmd_env(args) -> None:
     from quackers import envfile
 
     if not _is_interactive():
         raise CliError(
-            "`quacker setenv` is interactive and needs a terminal. "
+            "`env` is interactive and needs a terminal. "
             f"To configure non-interactively, edit {envfile.env_path()} "
             "(see .env.example for the available settings).")
 
@@ -1631,11 +1631,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-ai", action="store_true")
     s.set_defaults(func=cmd_history_rerun)
 
-    qk = sub.add_parser("quacker", help="app settings (.env, API keys)").add_subparsers(
-        dest="quacker_command", metavar="<action>")
-    qk.required = True
-    s = qk.add_parser("setenv", help="create or edit the .env file (API keys, models, providers)")
-    s.set_defaults(func=cmd_quacker_setenv)
+    s = sub.add_parser("env", help="create or edit the .env file (API keys, models, providers)")
+    s.set_defaults(func=cmd_env)
 
     s = sub.add_parser("reset", help="delete job-search data (asks first)")
     s.add_argument("--scope", choices=["current", "all"], default="current",
