@@ -199,3 +199,8 @@ def test_scan_tool_passes_titles_and_locations():
                                                   "locations": ["Berlin"]})
     assert argv == ["scan", "--titles", "Data Analyst, BI Intern", "--location", "Berlin"]
     assert cli.build_parser().parse_args(argv).titles == "Data Analyst, BI Intern"
+
+
+def test_scan_tool_passes_workplace_types():
+    argv = agent_mod.build_argv("scan_for_jobs", {"titles": ["Dev"], "workplace_types": ["remote"]})
+    assert argv == ["scan", "--titles", "Dev", "--type", "remote"]

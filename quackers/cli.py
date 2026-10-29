@@ -313,12 +313,33 @@ def _print_scan_result(result: Dict[str, Any]) -> None:
 
 NO_CV_MESSAGE = (
     "No CV. Add one with `quackers cv <file.pdf|.docx|.json>`, or scan without a CV:\n"
-    '  quackers scan --titles "Data Analyst, BI Intern" --location "Berlin, Munich"'
+    '  quackers scan --titles "Data Analyst, BI Intern" --type "remote, hybrid" '
+    '--location "Berlin, Munich"\n'
+    "  (--location may be left out when --type is remote only)"
 )
 
+# --type value -> SearchConfig flag
+WORKPLACE_TYPES = {
+    "remote": "include_remote",
+    "hybrid": "include_hybrid",
+    "onsite": "include_onsite",
+    "on-site": "include_onsite",
+    "office": "include_onsite",
+}
 
-def apply_scan_overrides(cfg, titles: List[str], locations: List[str]):
-    """Apply one-off --titles / --location to a config (not persisted)."""
+
+def parse_workplace_types(text: str) -> List[str]:
+    """'Remote, hybrid' -> ['remote', 'hybrid']. Raises CliError on unknown values."""
+    types = [t.lower() for t in _split_list(text)]
+    unknown = [t for t in types if t not in WORKPLACE_TYPES]
+    if unknown:
+        raise CliError(f"Unknown --type {', '.join(unknown)}: use remote, hybrid and/or onsite.")
+    return list(dict.fromkeys(WORKPLACE_TYPES[t] for t in types))
+
+
+def apply_scan_overrides(cfg, titles: List[str], locations: List[str],
+                         workplace: Optional[List[str]] = None):
+    """Apply one-off --titles / --type / --location to a config (not persisted)."""
     if titles:
         cfg.primary_title = titles[0]
         cfg.title_synonyms = titles[1:]
@@ -326,15 +347,22 @@ def apply_scan_overrides(cfg, titles: List[str], locations: List[str]):
         cfg.include_keywords = list(dict.fromkeys([*titles, *cfg.include_keywords]))
     if locations:
         cfg.locations = locations
+    if workplace:
+        for flag in set(WORKPLACE_TYPES.values()):
+            setattr(cfg, flag, flag in workplace)
+        if workplace == ["include_remote"] and not locations:
+            cfg.worldwide_remote = True
     return cfg
 
 
 def cmd_scan(args) -> None:
     titles = _split_list(args.titles or "")
     locations = _split_list(args.location or "")
-    if store.load_active_profile() is None and not (titles and locations):
+    workplace = parse_workplace_types(args.type or "")
+    remote_only = workplace == ["include_remote"]
+    if store.load_active_profile() is None and not (titles and (locations or remote_only)):
         raise CliError(NO_CV_MESSAGE)
-    cfg = apply_scan_overrides(load_config(), titles, locations)
+    cfg = apply_scan_overrides(load_config(), titles, locations, workplace)
     if args.source:
         cfg.enabled_sources = list(args.source)
     result = _run_scan(cfg, evaluate=not args.no_ai)
@@ -1299,8 +1327,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="only scan this source (repeatable)")
     s.add_argument("--titles", metavar='"A, B"',
                    help="job titles to search for, comma-separated (required without a CV)")
+    s.add_argument("--type", metavar='"remote, hybrid"',
+                   help="workplace type(s): remote, hybrid, onsite (comma-separated)")
     s.add_argument("--location", metavar='"X, Y"',
-                   help="locations, comma-separated (required without a CV)")
+                   help="locations, comma-separated (required without a CV unless --type remote)")
     s.set_defaults(func=cmd_scan)
 
     s = sub.add_parser("cv", help="load your CV (PDF / DOCX / JSON), or show the current one")

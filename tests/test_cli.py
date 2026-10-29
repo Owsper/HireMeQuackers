@@ -172,3 +172,41 @@ def test_cv_without_path_and_no_profile_says_no_cv(monkeypatch):
     monkeypatch.setattr(cli.store, "load_active_profile", lambda: None)
     with pytest.raises(cli.CliError, match="No CV"):
         cli.cmd_cv(cli.build_parser().parse_args(["cv"]))
+
+
+def _capture_scan(monkeypatch, profile=None):
+    seen = {}
+    monkeypatch.setattr(cli.store, "load_active_profile", lambda: profile)
+    monkeypatch.setattr(cli, "load_config",
+                        lambda: SearchConfig(include_onsite=True, include_hybrid=True))
+    monkeypatch.setattr(cli, "_run_scan",
+                        lambda cfg, *, evaluate: seen.setdefault("cfg", cfg) and {"status": "done", "per_source": {}})
+    return seen
+
+
+def test_scan_type_sets_only_requested_workplaces(monkeypatch):
+    seen = _capture_scan(monkeypatch)
+    cli.cmd_scan(_scan_args(["--titles", "Data Analyst", "--type", "Remote, hybrid",
+                             "--location", "Berlin"]))
+    cfg = seen["cfg"]
+    assert (cfg.include_remote, cfg.include_hybrid, cfg.include_onsite) == (True, True, False)
+    assert cfg.locations == ["Berlin"] and not cfg.worldwide_remote
+
+
+def test_scan_remote_only_needs_no_location_without_cv(monkeypatch):
+    seen = _capture_scan(monkeypatch)
+    cli.cmd_scan(_scan_args(["--titles", "Backend Developer", "--type", "remote"]))
+    cfg = seen["cfg"]
+    assert cfg.include_remote and not cfg.include_onsite and cfg.worldwide_remote
+
+
+def test_scan_hybrid_without_location_and_cv_says_no_cv(monkeypatch):
+    _capture_scan(monkeypatch)
+    with pytest.raises(cli.CliError, match="No CV"):
+        cli.cmd_scan(_scan_args(["--titles", "Backend Developer", "--type", "hybrid"]))
+
+
+def test_scan_rejects_unknown_type(monkeypatch):
+    _capture_scan(monkeypatch, profile=object())
+    with pytest.raises(cli.CliError, match="Unknown --type"):
+        cli.cmd_scan(_scan_args(["--type", "beach"]))

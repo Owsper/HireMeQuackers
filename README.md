@@ -238,10 +238,12 @@ quackers scan                      # uses your CV + saved search settings
 No CV? `quackers scan` answers "No CV" unless you say what to look for:
 
 ```bash
-quackers scan --titles "Data Analyst, BI Intern" --location "Berlin, Munich"
+quackers scan --titles "Data Analyst, BI Intern" --type "remote, hybrid" --location "Berlin, Munich"
+quackers scan --titles "Backend Developer" --type remote      # remote-only: no location needed
 ```
 
-`--titles` / `--location` apply to that scan only (also usable with a CV).
+`--type` is any of `remote`, `hybrid`, `onsite` (comma-separated). `--titles`,
+`--type` and `--location` apply to that scan only (also usable with a CV).
 A JSON CV uses the same fields as `quackers profile edit`:
 `{"name": "Ada", "email": "ada@example.com", "skills": ["Python", "SQL"],
 "experience": ["Data intern at X (2025)"], "education": ["BSc Mathematics"]}`.

@@ -57,6 +57,8 @@ def _scan(a: Dict[str, Any]) -> List[str]:
         argv += ["--source", str(src)]
     if a.get("titles"):
         argv += ["--titles", ", ".join(map(str, a["titles"]))]
+    if a.get("workplace_types"):
+        argv += ["--type", ", ".join(map(str, a["workplace_types"]))]
     if a.get("locations"):
         argv += ["--location", ", ".join(map(str, a["locations"]))]
     return argv
@@ -124,8 +126,11 @@ TOOLS: Dict[str, Tuple[str, Schema, ArgvBuilder]] = {
             "titles": {"type": "array", "items": {"type": "string"},
                        "description": "Job titles for this scan only. Required (with locations) "
                                       "when the user has no CV loaded."},
+            "workplace_types": {"type": "array",
+                                "items": {"type": "string", "enum": ["remote", "hybrid", "onsite"]},
+                                "description": "Workplace types for this scan only."},
             "locations": {"type": "array", "items": {"type": "string"},
-                          "description": "Locations for this scan only."},
+                          "description": "Locations for this scan only (optional for remote-only)."},
         }), _scan),
     "list_jobs": (
         "List discovered jobs with optional filters.",
