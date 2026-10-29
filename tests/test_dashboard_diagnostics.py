@@ -1,15 +1,12 @@
-"""Tests for the per-source diagnostics panel in the dashboard.
+"""Tests for the per-source diagnostics table printed by `quackers scan`.
 
-These validate the helper-only surface (``_source_diagnostic_rows``)
-which is the *logic* that formats raw SourceResult data into UI-ready
-rows.  We do NOT mock streamlit itself in these tests — render()
-requires a running script context and would exercise only Streamlit
-APIs.  The logic layer here is what the spec bullet ("per-source stats
-surfaced in the UI") actually depends on.
+These validate ``source_diagnostic_rows``, the logic that formats raw
+SourceResult data into table rows. The spec bullet ("per-source stats
+surfaced in the UI") depends on this layer, not on terminal rendering.
 """
 from __future__ import annotations
 
-from ui.dashboard import _source_diagnostic_rows
+from quackers.cli import source_diagnostic_rows as _source_diagnostic_rows
 
 
 def test_success_has_fetched_parsed_counts():

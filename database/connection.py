@@ -110,16 +110,16 @@ def init_db(url: Optional[str] = None) -> Engine:
 
 
 def get_session(engine: Optional[Engine] = None) -> Session:
-    """Create a Session for UI / service use.
+    """Create a Session for CLI / service use.
 
     ``expire_on_commit=False`` on purpose: this app fetches ORM rows,
     exits the `with with_session()` block (which commits), and then
-    *reads attributes* of those rows in the Streamlit render pass.
+    *reads attributes* of those rows while printing CLI output.
     With the SQLAlchemy default (`expire_on_commit=True`) the commit
     expires every instance and the post-block reads raise
     `DetachedInstanceError`. Disabling expiry keeps instances usable
-    after commit; UI reads are refreshed because every Streamlit
-    rerun re-queries the DB.
+    after commit; reads stay fresh because every CLI command
+    re-queries the DB.
     """
     if engine is None:
         engine = get_engine()

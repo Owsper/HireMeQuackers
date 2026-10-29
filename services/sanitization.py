@@ -111,7 +111,16 @@ def sanitize_filename(name: Optional[str], default: str = "file") -> str:
     tail = "".join(ch for ch in tail if not unicodedata.combining(ch))
     # Replace unsafe chars
     tail = _UNSAFE_CHARS_RE.sub("_", tail)
-    tail = re.sub(r"[._\s]+", "_", tail).strip("._ ")
+    # Collapse dots/underscores/whitespace in the stem only, so the
+    # extension survives ("my cv.pdf" -> "my_cv.pdf", not "my_cv_pdf").
+    stem, dot, ext = tail.rpartition(".")
+    if not dot:
+        stem, ext = tail, ""
+    stem = re.sub(r"[._\s]+", "_", stem).strip("._ ")
+    ext = re.sub(r"[^A-Za-z0-9]", "", ext)[:10]
+    if not stem:
+        stem, ext = ext, ""
+    tail = f"{stem}.{ext}" if ext else stem
     if not tail:
         return default
     # Strip up to 120 chars (keep extension if present)

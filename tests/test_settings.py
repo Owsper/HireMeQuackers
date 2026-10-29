@@ -143,51 +143,32 @@ def test_config_reads_back_roundtrip():
 
 
 # ---------------------------------------------------------------------------
-# Settings-page validation path (regression: Pydantic v1-style .validate() call)
+# CLI config validation path (`quackers config set / edit / load`)
 # ---------------------------------------------------------------------------
 
 
-def test_settings_page_uses_model_revalidate_not_v1_validate():
-    import pathlib
+def test_validate_config_accepts_valid_dict():
+    from quackers.cli import validate_config
 
-    source = (
-        pathlib.Path(__file__).resolve().parent.parent / "ui" / "settings_page.py"
-    ).read_text(encoding="utf-8")
-    assert "_revalidate_model" in source, "Apply/Save buttons must use the revalidation helper"
-    # Pydantic v1-style instance call cfg.validate() is not usable on v2 models
-    assert "cfg.validate()" not in source, "cfg.validate() is a Pydantic v1 API and raises on v2"
-
-
-def test_revalidate_helper_noop_on_valid_config():
-    from ui.settings_page import _revalidate_model
-
-    cfg = SearchConfig(employment_types=["internship"], max_results=100)
-    _revalidate_model(cfg)  # must not raise under the installed pydantic
+    cfg = validate_config({"employment_types": ["internship"], "max_results": 100})
     assert cfg.max_results == 100
 
 
-def test_revalidate_helper_rejects_bad_field_state():
-    """State mutated after construction past type-checks must be caught.
-
-    Mutating the internal ``__dict__`` bypasses Pydantic's assignment
-    validation, simulating a widget pathway bypassing type coercion.
-    ``_revalidate_model`` must therefore reject the bad state -- either
-    with a pydantic ``ValidationError`` (if the library revalidates
-    for us) or by leaving the instance's value visibly corrupted
-    (if the library does not revalidate -- in which case the test
-    documents that and skips the assertion).
-    """
+def test_validate_config_rejects_bad_value():
     from pydantic import ValidationError
-    from ui.settings_page import _revalidate_model
+    from quackers.cli import validate_config
 
-    cfg = SearchConfig()
-    cfg.__dict__["max_results"] = "not-a-number"  # bypass v2 assignment validation
-    raised = False
-    try:
-        _revalidate_model(cfg)
-    except ValidationError:
-        raised = True
-    # We accept either behaviour; this test exists to lock in the code
-    # path (it runs the revalidation call) and to document the alternative.
-    # If you want a hard assertion, replace with:
-    #   assert raised
+    with pytest.raises(ValidationError):
+        validate_config({"max_results": "not-a-number"})
+
+
+def test_persisted_config_keeps_title_gate_fields():
+    """Saving must not drop fields that normalized_dict() omits."""
+    import json
+    from config.runtime_settings import _payload
+
+    cfg = SearchConfig(primary_title="Data Analyst", require_verified_location=True)
+    data = json.loads(_payload(cfg))
+    assert data["primary_title"] == "Data Analyst"
+    assert data["require_verified_location"] is True
+    assert SearchConfig(**data).primary_title == "Data Analyst"
