@@ -1,8 +1,8 @@
 # HireMeQuackers — Local-First AI Job-Hunting Agent
 
-HireMeQuackers is a local web application that discovers job and internship listings from multiple public sources, evaluates how well you fit each position using Google Gemini (optional), tailors your CV, generates cover letters, and tracks your application pipeline — all in a simple SQLite database on your machine.
+HireMeQuackers is a local command-line application that discovers job and internship listings from multiple public sources, evaluates how well you fit each position using Google Gemini (optional), tailors your CV, generates cover letters, and tracks your application pipeline — all in a simple SQLite database on your machine.
 
-Everything runs in a Streamlit dashboard at [http://localhost:8501](http://localhost:8501).
+Everything runs from the `quackers` command in your terminal — no web server, nothing listening on the network.
 
 ---
 
@@ -13,10 +13,10 @@ The v2 max-coverage discovery engine (October 2026) replaces the original single
 - **13 job sources** (up from 5). In addition to Greenhouse, Lever, RSS feeds, Web Search, and Career Pages, v2 adds **RemoteOK** (keyless JSON API), **Hacker News** (Algolia job listings), and **EURES** (opt-in EU public-sector endpoint).
 - **Hybrid search providers.** When `BRAVE_SEARCH_API_KEY` is set, the web-search source uses the **Brave Search API** with pagination. Without a key it automatically falls back to **DuckDuckGo** — the app runs with zero paid keys.
 - **Query planner.** Instead of a single hand-typed query, a query planner builds up to `SCAN_MAX_TOTAL_QUERIES` complementary queries per scan: exact role titles + synonyms, skills x locations, German-language variants when European locations are set (`Praktikum`, `Werkstudent`, `Ausbildung`), ATS `site:` queries, informal hiring phrasing, and recent-posted variants.
-- **Detail-page extraction.** Web and career-page results no longer come in as title + URL only. A detail extractor (JSON-LD `JobPosting` first, Open Graph tags second, HTML heuristics third) recovers description, salary, employment type, posted/closing dates, and application URL, and records an `extraction_confidence` so the UI can tell you how reliable each field is.
+- **Detail-page extraction.** Web and career-page results no longer come in as title + URL only. A detail extractor (JSON-LD `JobPosting` first, Open Graph tags second, HTML heuristics third) recovers description, salary, employment type, posted/closing dates, and application URL, and records an `extraction_confidence` so the CLI can tell you how reliable each field is.
 - **Enrichment pass.** Newly stored jobs are automatically re-fetched (rate-limited, batched up to `ENRICHMENT_MAX_PER_SCAN`) to fill missing description text, so AI matching has real content to work on.
-- **Dynamic source registry + health tracking.** Source connectivity (listings found, last seen, freshness, per-source failure counts) is persisted and surfaced on the Sources page.
-- **Scan diagnostics panel.** After each scan, the Overview page shows a per-source breakdown: `Success` / `Partial` / `Failed` / `Skipped` status, attempted, fetched, parsed, duplicate, and failed counts, plus a human-readable error message.
+- **Dynamic source registry + health tracking.** Source connectivity (listings found, last seen, freshness, per-source failure counts) is persisted and shown by `quackers sources list`.
+- **Scan diagnostics panel.** After each scan, `quackers scan` prints a per-source breakdown: `Success` / `Partial` / `Failed` / `Skipped` status, attempted, fetched, parsed, duplicate, and failed counts, plus a human-readable error message.
 - **Per-source error isolation.** One failing source never discards results from the other sources.
 - **SQLite migrations at startup** — `data/jobs.db` is upgraded additively and idempotently on every launch. No manual schema work required.
 
@@ -30,7 +30,7 @@ The v2 max-coverage discovery engine (October 2026) replaces the original single
 4. [Configuration](#configuration)
 5. [Running the Application](#running-the-application)
 6. [How a Scan Works](#how-a-scan-works)
-7. [Using the Dashboard](#using-the-dashboard)
+7. [Command Reference](#command-reference)
 8. [Uploading and Reviewing Your CV](#uploading-and-reviewing-your-cv)
 9. [Configuring Search Settings](#configuring-search-settings)
 10. [Triggering a Scan](#triggering-a-scan)
@@ -94,6 +94,7 @@ py -m venv .venv
 
 # 4. Install dependencies
 pip install -r requirements.txt
+pip install -e .            # installs the `quackers` command
 
 # 5. Optional: install the Gemini SDK (for AI matching)
 pip install google-genai
@@ -118,6 +119,7 @@ source .venv/bin/activate
 
 # 4. Install dependencies
 pip install -r requirements.txt
+pip install -e .            # installs the `quackers` command
 
 # 5. Optional: install the Gemini SDK (for AI matching)
 pip install google-genai
@@ -183,111 +185,159 @@ SQLite database. The `output/` directory stores generated CVs and letters.
 
 ## Running the Application
 
-> Make sure your virtual environment is **activated** first.
+> Make sure your virtual environment is **activated** and you ran `pip install -e .`
+> (this installs the `quackers` command).
 
 ```bash
-streamlit run app.py
+quackers --help            # list every command
+quackers status            # overview: counts, last scan, recent jobs, follow-ups
 ```
 
-Your browser should open automatically at **http://localhost:8501**.
-If it doesn't, open that URL manually.
+If the `quackers` command is not found, `python -m quackers ...` works the same way.
 
-To stop the app, press `Ctrl+C` in the terminal.
+A typical first session:
+
+```bash
+quackers profile import ~/Documents/my_cv.pdf --edit      # 1. create your profile
+quackers config set primary_title="Data Analyst" employment_types=internship,working_student
+quackers config set locations="Berlin, Munich" include_remote=true   # 2. what to search for
+quackers scan                                              # 3. discover jobs
+quackers jobs --new --sort score --why                     # 4. review the results
+quackers job 42                                            # 5. read one job in full
+quackers docs cover-letter 42 --show                       # 6. draft a cover letter
+quackers app set 42 shortlisted                            # 7. track it
+```
+
+Every command prints help with `-h`, e.g. `quackers jobs -h`.
 
 ---
 
 ## How a Scan Works
 
-1. **Query plane.** The query planner builds up to `SCAN_MAX_TOTAL_QUERIES` queries per run, using the role titles, preferred skills, locations, and language hints in your search settings.
+1. **Query plan.** The query planner builds up to `SCAN_MAX_TOTAL_QUERIES` queries per run, using the role titles, preferred skills, locations, and language hints in your search settings.
 2. **Worker pool.** Sources run in a bounded thread pool (5 workers, configurable via `SCAN_MAX_SOURCES`).
 3. **Normalisation + de-dup.** Listings are normalised and de-duplicated using strong keys (canonicalised URL, provider + job-ID). Loose title-similarity is used only to *flag* a potential duplicate — it does not discard any record.
 4. **Enrichment.** Newly stored web and career-page jobs are re-fetched (rate-limited, up to `ENRICHMENT_MAX_PER_SCAN` per scan, `ENRICHMENT_DELAY_SECONDS` between calls) to recover description, salary, employment type, and apply URL when the initial listing had none.
-5. **Matching.** Results are scored against your uploaded CV profile using Gemini when available, or via the deterministic keyword/skill/education fallback when not.
+5. **Matching.** Results are scored against your active CV profile using Gemini when available, or via the deterministic keyword/skill/education fallback when not.
 6. **Storage.** Records are written to SQLite immediately so a network hang mid-scan cannot lose data.
 
-> **Diagnosis after a scan:** After a scan finishes, expand **"Source diagnostics"** on the
-> Overview page to see per-source rows: `Success` / `Partial` / `Failed` / `Skipped`,
-> with attempted, fetched, parsed, duplicate, and failed counts, plus a human-readable
-> error message when a source reports an issue.
+> **Diagnosis after a scan:** `quackers scan` ends with a per-source table:
+> `Success` / `Partial` / `Failed` / `Skipped`, with attempted, fetched, parsed,
+> duplicate, and failed counts, plus the error message when a source reports an issue.
+> Past scans are available with `quackers history list` / `quackers history show <id>`.
 
 ---
 
-## Using the Dashboard
+## Command Reference
 
-The sidebar on the left gives you access to **10 pages**:
-
-| Page | What it does |
+| Command | What it does |
 |---|---|
-| **Overview** (⓿) | At-a-glance stats: total jobs, new jobs, shortlisted, prepared, applied, interviews, follow-ups. Also has the **"Scan for new jobs now"** button and the AI health check. |
-| **Search Settings** (1⚙️) | Edit keywords, employment types, locations, filters, workplace preferences, and save/load named profiles. |
-| **Job Discovery** (2🔍) | Browse, filter, sort, and shortlist all discovered jobs. "New since last scan" toggle. |
-| **Job Detail** (3📋) | Full job description, extracted requirements, AI match breakdown, missing qualifications, shortlist / apply actions, and document generation buttons. |
-| **Candidate Profile** (4👤) | Upload your CV (PDF/DOCX), review and edit the extracted profile, save changes. Profile version bumps on each edit. |
-| **Documents** (5📄) | List all generated CVs and cover letters per job, preview, download, approve, or regenerate. |
-| **Application Tracker** (6📚) | Full pipeline per job: Discovered → Shortlisted → Prepared → Approved → Applied → Interview → Rejected/Withdrawn. Notes, follow-up dates, interview status. |
-| **Sources** (7🌐) | Per-source health: last scan date, listings found, error messages, enable/disable toggle. |
-| **Scan History** (8📅) | Every past scan with its config, timing (start/duration), new/duplicate counts, failures, and a "re-run this config" button. |
+| `quackers status [--ai-check]` | Totals (jobs, new, shortlisted, prepared, applied, interviews), last scan, recent jobs, upcoming follow-ups. |
+| `quackers ai-check` | Shows whether the Gemini SDK and API key are configured. |
+| `quackers scan [--no-ai] [--source NAME]` | Runs a scan with the live search config. `--no-ai` skips Gemini scoring; `--source` limits the scan to one or more sources. |
+| `quackers jobs [--new] [--min-score N] [--search TEXT] [--source S] [--sort score] [--why] [--limit N]` | Lists discovered jobs. `--why` explains why each job was included (title / location / source evidence). |
+| `quackers job ID` | Full details: facts, match breakdown, requirements, application state, documents, description. |
+| `quackers open ID [--apply]` | Opens the posting (or the application URL) in your browser. |
+| `quackers profile list / show / import / edit / activate / deactivate` | Candidate profiles. `import` parses a PDF/DOCX CV; `edit` opens the profile as JSON in your editor. |
+| `quackers config show / set / edit / save-as / load / profiles / reset` | Search settings. `set` takes `KEY=VALUE` pairs; `edit` opens the whole config as JSON. |
+| `quackers app list / set / note / follow-up / interview / followups` | Application tracker. |
+| `quackers docs cv / cover-letter / list / show / export / approve` | Generated CV suggestions and cover letters. |
+| `quackers sources list / enable / disable` | Per-source health and on/off switches. |
+| `quackers history list / show / rerun` | Past scans; `rerun` repeats a scan with that scan's config. |
+| `quackers reset [--scope current or all]` | Deletes job-search data after showing exactly what will be removed. |
+
+Commands that change or delete data ask for confirmation; pass `-y` / `--yes`
+(or `--confirm` for `app set ... applied`) in scripts.
 
 ---
 
 ## Uploading and Reviewing Your CV
 
-1. Go to **Candidate Profile** (☄ icon).
-2. Click **"Upload CV"** and select your `.pdf` or `.docx` file.
-3. HireMeQuackers extracts text and splits it into sections (name, email, phone,
-   summary, skills, education, experience, certifications, achievements,
-   projects, languages).
-4. Review and correct any extracted fields before saving.
-5. Click **"Save profile"**. Each save with content changes increments the
-   `profile_version` and invalidates cached AI evaluations tied to the old version.
-6. Go to **AI health check** on the Overview page to confirm Gemini is configured.
+```bash
+quackers profile import path/to/cv.pdf --edit
+```
 
-> The CV file is stored locally in `data/`. No CV content is uploaded to any
-> external service except the minimum data required for a Gemini API call when
-> you explicitly trigger AI matching.
+1. A copy of the CV is stored in `data/cv/` (the original is never modified).
+2. HireMeQuackers extracts the text and splits it into sections (name, email,
+   phone, summary, skills, education, experience, certifications,
+   achievements, projects, languages) and prints its extraction confidence.
+3. With `--edit`, the extracted fields open as JSON in your editor
+   (`$EDITOR`, or Notepad on Windows / nano elsewhere). Fix anything that was
+   mis-parsed, save, and close the editor.
+4. Confirm to save. The new profile becomes the active one (use `--inactive`
+   to keep the current one active).
+5. Later changes: `quackers profile edit`. Each save with content changes
+   increments the `profile_version` and invalidates cached AI evaluations tied
+   to the old version.
+6. Run `quackers ai-check` to confirm Gemini is configured.
+
+> No CV content is uploaded to any external service except the minimum data
+> required for a Gemini API call when AI matching is enabled.
 
 ---
 
 ## Configuring Search Settings
 
-1. Go to **Search Settings** (1⚙️).
-2. Edit your search criteria:
-   - **Employment types** — select one or more: Internship, Working Student,
-     Part-time, Full-time, Graduate, Temporary, Contract, Other.
-   - **Keywords** — include / exclude keywords (comma-separated).
-   - **Skills** — required and preferred skills (comma-separated).
-   - **Locations** — included / excluded locations, language requirements.
-   - **Workplace arrangement** — remote, hybrid, onsite, worldwide-remote toggles.
-   - **Filters** — posted-within-days (1/3/7/14/30), salary min/max, max results.
-   - **Boolean groups** — optional AND / OR / NOT keyword groups.
-   - **Sources** — which registered sources to include in scans.
-3. Click **"Apply + persist to live settings"** to save.
-4. Optionally enter a name in the "Save current as profile" field and click
-   **"Save profile"** to store a reusable named profile.
-5. To load a saved profile later, select it from the dropdown and click
-   **"Load profile"**.
+Show the live config:
+
+```bash
+quackers config show            # readable list
+quackers config show --json     # exact JSON
+```
+
+Change individual values with `KEY=VALUE` pairs (lists are comma-separated,
+`none` clears a value):
+
+```bash
+quackers config set employment_types=internship,working_student
+quackers config set locations="Berlin, Hamburg" excluded_locations=London
+quackers config set include_remote=true posted_within_days=14 salary_min=none
+quackers config set enabled_sources=greenhouse,lever,remoteok
+```
+
+Or edit everything at once in your editor (validated before saving):
+
+```bash
+quackers config edit
+```
+
+Useful keys: `primary_title`, `title_synonyms`, `excluded_titles`,
+`employment_types` (internship, working_student, part_time, full_time,
+graduate, temporary, contract), `include_keywords`, `exclude_keywords`,
+`required_skills`, `preferred_skills`, `locations`, `excluded_locations`,
+`include_remote` / `include_hybrid` / `include_onsite` / `worldwide_remote`,
+`require_verified_location`, `posted_within_days`, `salary_min`, `salary_max`,
+`max_results`, `min_match_score`, `enabled_sources`.
+
+Named profiles:
+
+```bash
+quackers config save-as "Berlin internship"
+quackers config profiles
+quackers config load "Berlin internship"
+```
 
 ---
 
 ## Triggering a Scan
 
-Scans are **explicit** — they only run when you click the button. There is no
-automatic daily scheduler.
+Scans are **explicit** — they only run when you run the command. There is no
+built-in daily scheduler; to scan periodically, schedule `quackers scan` with
+cron or Windows Task Scheduler.
 
-1. Go to **Overview** (⓿).
-2. Optionally toggle **"Evaluate with Gemini"** if you want AI match scores
-   (costs API quota) or leave it off for deterministic filters only.
-3. Click **"Scan for new jobs now"**.
-4. Watch the progress bar. You can click **"Stop scan"** to cancel.
-5. When complete, a result card appears showing:
-   - `done` / `partial` / `error` status
-   - Total discovered, new jobs, duplicates
-   - Per-source failures (click to expand)
-6. New and updated jobs are saved to the database immediately — even if the
-   app closes or the API fails mid-scan.
+```bash
+quackers scan              # with Gemini scoring when configured
+quackers scan --no-ai      # deterministic filters only (no API quota)
+quackers scan --source lever --source greenhouse
+```
+
+Progress is printed per source. Press `Ctrl+C` to stop; anything already
+stored stays in the database. The result shows `done` / `partial` / `error`,
+discovered / new / duplicate counts, filtered-out jobs, enrichment counts and
+the per-source table.
 
 **Scan behavior:**
-- Sources are scanned in sequence (bounded by `SCAN_MAX_SOURCES`).
+- Sources are scanned in a bounded pool (`SCAN_MAX_SOURCES`).
 - Each source gets a conservative rate limit (`RATE_LIMIT_MIN_SECONDS`).
 - Rate-limiting and bounded retries are built in (`MAX_RETRY_ATTEMPTS`).
 - Failures are honest: a source only shows "success" if it actually returned data.
@@ -301,17 +351,17 @@ automatic daily scheduler.
 Match scores (0–100) are only generated when:
 - `ENABLE_AI_MATCHING=true` in `.env`, **and**
 - `GEMINI_API_KEY` is a real key, **and**
-- You clicked "Scan" with "Evaluate with Gemini" checked.
+- the scan ran without `--no-ai`.
 
-To view scores:
-- **Job Discovery** page: the "Match" column shows the score for each job.
-   Set the "Min match score" filter to sort by fit.
-- **Job Detail** page: the "Match" tab shows the full breakdown:
-  - Per-skill match (required vs. preferred)
-  - Experience, education, language, location fit
-  - Evidence from your profile
-  - Missing or weak qualifications
-  - Confidence level
+Without them, the deterministic fallback score is shown instead.
+
+```bash
+quackers jobs --sort score --min-score 60    # best matches first
+quackers job 42                              # full breakdown for one job
+```
+
+`quackers job` shows the per-area breakdown, evidence from your profile, and
+missing or weak qualifications.
 
 > Scores are **not** a guarantee of being hired. They reflect how closely your
 > profile matches the stated job requirements.
@@ -320,39 +370,49 @@ To view scores:
 
 ## Generating CVs and Cover Letters
 
-On the **Job Detail** page, the "Documents" tab offers:
+```bash
+quackers docs cv 42 --show                         # CV tailoring suggestions
+quackers docs cover-letter 42 --tone confident     # professional | casual | confident
+quackers docs list                                 # everything generated so far
+quackers docs show 7                               # print a document
+quackers docs export 7 ~/Desktop/                  # copy it somewhere
+quackers docs approve 7                            # mark it ready to use
+```
 
-- **Generate tailored CV** — produces a job-specific CV that reuses your
-  profile (verified fields only). No skills are invented. The output is
-  saved to `output/` and logged in the Documents page.
-- **Generate cover letter** — produces a professional cover letter using the
-  employer name, job title, and relevant evidence from your profile.
+- **CV suggestions** reuse your profile's verified fields only. No skills are
+  invented.
+- **Cover letters** use the employer name, job title, and relevant evidence
+  from your profile.
 
-Both documents are:
-- Versioned against your candidate profile version
-- Previewable on the **Documents** page
-- Downloadable as DOCX (PDF export requires `PyMuPDF` + a system LaTeX install)
-- Approvable (gitkeep) before you use them for a submission
+Files are written to `data/outputs/` and versioned against your candidate
+profile version.
 
 ---
 
 ## Application Tracker
 
-The **Application Tracker** (6📚) is the single view of your pipeline.
-
 **Statuses:**
 `DISCOVERED → SHORTLISTED → PREPARED → APPROVED → APPLIED → INTERVIEW`
 with optional terminal states: `REJECTED`, `WITHDRAWN`.
 
-**Transitions are explicit** — nothing is inferred. To mark a job as "Applied",
-you must click the "Mark as Applied" button in the Job Detail page. This is
-a deliberate confirmation to prevent accidental submissions.
+```bash
+quackers app set 42 shortlisted
+quackers app set 42 prepared
+quackers app set 42 applied            # asks you to confirm you submitted it yourself
+quackers app follow-up 42 2026-11-15
+quackers app interview 42 "Technical round passed"
+quackers app note 42 "Recruiter replied within 2 days"
+quackers app list --status APPLIED
+quackers app followups --days 7
+```
 
-Each application row tracks:
-- Shortlisted date, documents-prepared date, approved date, applied date
-- Follow-up date (upcoming follow-ups appear on Overview and the tracker)
-- Interview status (free text, e.g., "Technical round passed")
-- Notes (append-only history)
+**Transitions are explicit** — nothing is inferred. Marking a job as applied
+requires a confirmation (or `--confirm`) to prevent accidental records.
+Out-of-order moves (e.g. straight from DISCOVERED to INTERVIEW) are allowed but
+print a warning.
+
+Each application tracks shortlisted / prepared / approved / applied dates, a
+follow-up date, interview status, and append-only notes.
 
 ---
 
@@ -382,7 +442,8 @@ Test files (created in `tests/`):
 - `test_query_planner.py` — query generation (German variants, skill×location)
 - `test_search_providers.py` — Brave/API + DuckDuckGo fallback
 - `test_web_search_provider.py` — web-search source provider integration
-- `test_dashboard_diagnostics.py` — per-source diagnostics status rows
+- `test_dashboard_diagnostics.py` — per-source diagnostics status rows (`quackers scan`)
+- `test_cli.py` — command routing, config coercion, terminal-output sanitising
 - `test_sources_new.py` — RemoteOK, HackerNews, EURES adapters
 - `test_feed_registry.py` — bundled RSS feed list
 
@@ -417,8 +478,7 @@ Copy-Item .\data\jobs.db.backup-20260101 .\data\jobs.db -Force
 cp data/jobs.db.backup-20260101 data/jobs.db
 ```
 
-> Stop the Streamlit app before restoring. If you have a live app open,
-> close it first (`Ctrl+C`).
+> Make sure no `quackers` command (e.g. a running scan) is active before restoring.
 
 ---
 
@@ -427,7 +487,7 @@ cp data/jobs.db.backup-20260101 data/jobs.db
 | Area | Limitation |
 |---|---|
 | **AI matching** | Requires a valid `GEMINI_API_KEY` and the `google-genai` package. Without them, jobs are discovered but scored using the deterministic keyword/skill/education fallback — no error is raised. |
-| **Detail extraction** | Works on well-structured job pages. Title-only listings (e.g., some Hacker News job posts) are enriched only if the linked page has parseable content. `extraction_confidence` is reported per field so the UI can tell you when data is uncertain. |
+| **Detail extraction** | Works on well-structured job pages. Title-only listings (e.g., some Hacker News job posts) are enriched only if the linked page has parseable content. `extraction_confidence` is reported per field so the CLI can tell you when data is uncertain. |
 | **Web search without Brave key** | DuckDuckGo can return HTTP 202 soft-fails on some queries. The source handles this gracefully but coverage is reduced compared to Brave. |
 | **EURES source** | Opt-in. EURES publishes machine-readable data behind the EURES Job Mobility Portal; no verified keyless public API endpoint is bundled. Set `EURES_API_URL` in `.env` if you have one. The source shows as `Skipped` (not `Failed`) when the URL is unset. |
 | **LinkedIn / X / Instagram** | Not included. These platforms require paid credentials and/or block automated access by default. Only public, keyless, or explicitly-authorized source types are bundled. |
@@ -452,11 +512,11 @@ For career-page HTML scraping, add a new entry in `sources/career_pages.py`.
 HireMeQuackers was designed with a conservative safety posture for a tool that operates on personal data and interacts with external services:
 
 - **URL fetch safety** — `services/safe_requests.py` rejects `http://` loopback, private RFC 1918, link-local, and `file://` schemes. Only public `https://` URLs are fetched.
-- **Content sanitisation** — User-visible and user-uploaded content is sanitised (HTML stripped, tags removed) before being stored in SQLite or rendered in the Streamlit UI.
+- **Content sanitisation** — User-visible and user-uploaded content is sanitised (HTML stripped, tags removed) before being stored in SQLite, and terminal control characters / escape sequences are stripped from anything printed by the CLI.
 - **Robots.txt honoured for scoping** — `services/robots.py` is used to check whether a path is allowed for a specific crawl. It does not prevent pagination or repeated access to already-allowed paths.
 - **API key handling** — Google Gemini API key is sent only to `aistudio.google.com` endpoints. Brave Search key is sent only to `api.search.brave.com`. No other service receives your API keys.
 - **No CAPTCHA or login bypass** — The application does not implement any bot/anti-bot work-around, and will not bypass paywalls, logins, or CAPTCHAs.
-- **SQLite single-process** — The DB uses a single connected process. Do not run more than one `streamlit run app.py` instance simultaneously, as this causes `database is locked` errors.
+- **SQLite single-process** — The DB uses a single connected process. Do not run two `quackers scan` commands at the same time, as this causes `database is locked` errors.
 
 ---
 
@@ -471,7 +531,7 @@ HireMeQuackers was designed with a conservative safety posture for a tool that o
    - `scan(cfg)` — returns a `SourceResult` with zero or more `RawListing`s.
 5. Add the class with the `@register` decorator.
 6. Import the module in `sources/__init__.py` so it gets registered.
-7. Enable it in the UI: **Sources** page → toggle it on.
+7. Enable it: `quackers sources enable <name>` (check with `quackers sources list`).
 
 ---
 
@@ -484,17 +544,12 @@ pip install google-genai
 The app still works without it — AI matching is just disabled. Add it to use
 the full feature set.
 
-### Port 8501 already in use
-```bash
-# Windows
-streamlit run app.py --server.port 8502
+### "quackers: command not found"
+Run `pip install -e .` inside the activated virtual environment, or use
+`python -m quackers ...` instead.
 
-# macOS / Linux
-streamlit run app.py --server.port 8502
-```
-
-### A source shows "failed" in the Sources page
-- Check the error message on the Sources page.
+### A source shows "failed" in `quackers sources list`
+- Check the error column of `quackers sources list`, or `quackers history show <scan-id>`.
 - Common causes: the company's ATS slug changed, the endpoint is rate-limiting,
   or the site requires JavaScript to render.
 - Built-in retries are enabled; try the scan again later.
@@ -518,7 +573,7 @@ Playwright is disabled by default. To enable it:
 
 ### SQLite "database is locked"
 Only one process can write to the SQLite DB at a time. Make sure you don't
-run two instances of `streamlit run app.py` simultaneously.
+run two `quackers scan` commands simultaneously.
 
 ### Match score is 0 or blank
 - The job was scanned with `ENABLE_AI_MATCHING=false`, or
@@ -532,7 +587,6 @@ Run a fresh scan with AI matching enabled after fixing any of the above.
 
 ```
 HireMeQuackers/
-├── app.py                  # Streamlit entry point, sidebar nav
 ├── requirements.txt        # Python dependencies
 ├── pyproject.toml          # Project metadata, test config
 ├── conftest.py             # Shared pytest fixtures
@@ -574,7 +628,7 @@ HireMeQuackers/
 │   ├── cv_tailoring.py     # Generate job-specific CV content
 │   ├── cover_letter.py     # Generate cover letter text
 │   ├── application_assistant.py # Application state machine
-│   ├── scheduler.py        # OnDemandScheduler (background scan thread)
+│   ├── scheduler.py        # OnDemandScheduler (single on-demand scan)
 │   ├── query_planner.py    # Builds multi-query plan from user search settings
 │   ├── feed_registry.py    # Bundled RSS feed list (default + supplementary)
 │   ├── detail_extractor.py # JSON-LD → Open Graph → HTML heuristics
@@ -590,17 +644,11 @@ HireMeQuackers/
 │   ├── exporter.py         # DOCX / PDF export
 │   └── templates/          # Document templates
 │
-├── ui/
-│   ├── dashboard.py        # Overview page (stats + scan button)
-│   ├── settings_page.py    # Search settings form
-│   ├── jobs_page.py        # Job discovery / list with filters
-│   ├── job_detail_page.py  # Single job detail
-│   ├── cv_page.py          # Candidate profile + CV upload
-│   ├── documents_page.py   # Generated docs list + download
-│   ├── applications_page.py # Application pipeline tracker
-│   ├── sources_page.py     # Source health + enable/disable
-│   ├── scan_history.py     # Past scans + retry
-│   └── util.py             # Shared session + formatters
+├── quackers/              # Command-line interface (`quackers`)
+│   ├── cli.py              # argparse commands: scan, jobs, job, app, docs, profile, config, ...
+│   ├── store.py            # DB session + row-to-dict helpers used by the commands
+│   ├── term.py             # Terminal output: tables, colours, prompts, control-char stripping
+│   └── __main__.py         # `python -m quackers`
 │
 ├── data/                   # SQLite database (created on first run)
 ├── output/                 # Generated CVs and cover letters

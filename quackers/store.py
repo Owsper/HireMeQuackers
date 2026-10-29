@@ -1,14 +1,10 @@
-"""Shared helpers + cached DB access for the Streamlit UI.
+"""Shared DB access + serialisation helpers for the `quackers` CLI.
 
-Isolates all engine/session creation in one place so individual page
-functions don't re-open connections on every rerun. Streamlit reruns the
-script on every user interaction, so a per-widget DB session would be
-catastrophic for performance; we therefore:
-
-- Cache the Engine (module level) keyed on the resolved DATABASE_URL.
-- Provide `with_session()` as a context manager that always closes, and
-  rolls back on exception.
-- Provide a few small serialisation / formatting helpers used by pages.
+- Engine creation lives in `database.connection` (cached per DATABASE_URL).
+- `with_session()` is a context manager that commits on success, rolls back
+  on exception and always closes.
+- The remaining helpers turn ORM rows into plain dicts so command handlers
+  never touch detached ORM instances.
 """
 from __future__ import annotations
 
@@ -16,8 +12,6 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
-
-import streamlit as st  # noqa: F401  (re-imported by callers for transitive use)
 
 from database import repository as db  # noqa: F401 (re-export for callers)
 from database.connection import get_engine, get_session, init_db
@@ -92,7 +86,7 @@ def within_days(dt: Optional[datetime], days: int) -> bool:
 
 
 def job_to_dict(job) -> Dict[str, Any]:
-    """Stable serialisable form of a Job for st.dataframe / st.json."""
+    """Stable serialisable form of a Job (plain dict, safe outside a session)."""
     return {
         "id": job.id,
         "title": job.title,
@@ -116,8 +110,8 @@ def job_to_dict(job) -> Dict[str, Any]:
 def load_active_profile() -> Optional[Any]:
     """Return the currently active CandidateProfile ORM instance, or None.
 
-    Used by pages that need the active profile data without opening a DB
-    session themselves (e.g. the Job Detail "Documents" section).
+    Used by commands that need the active profile data without opening a DB
+    session themselves (e.g. `quackers docs cover-letter`).
     """
     with with_session() as session:
         return db.get_active_candidate_profile(session)
@@ -126,7 +120,7 @@ def load_active_profile() -> Optional[Any]:
 def list_documents_for_job(job_id: int) -> List[Dict[str, Any]]:
     """Return every GeneratedDocument for a specific job as plain dicts.
 
-    Caller expectations (ui/job_detail_page._render_documents):
+    Caller expectations (quackers.cli job / docs commands):
         d["doc_type"]       - str (e.g. "cv_suggestions", "cover_letter")
         d["created_at"]     - str  (formatted YYYY-MM-DD HH:MM)
         d["version"]        - int  (from GeneratedDocument.profile_version)
@@ -163,7 +157,7 @@ def get_output_dir() -> Path:
 
 
 def match_to_row(job, match, profile_version: Optional[int]) -> Dict[str, Any]:
-    """Merge a Job + optional JobMatch into a single dataframe row."""
+    """Merge a Job + optional JobMatch into a single row dict."""
     base = job_to_dict(job)
     base["match_score"] = match.match_score if match else None
     base["match_profile_version"] = match.profile_version if match else None
@@ -255,7 +249,7 @@ def application_row(app, job) -> Dict[str, Any]:
 
 
 def list_applications_with_jobs() -> List[Dict[str, Any]]:
-    """All applications joined with their job (for the tracker page)."""
+    """All applications joined with their job (for `quackers app list`)."""
     from database.models import Application, Job
 
     with with_session() as session:

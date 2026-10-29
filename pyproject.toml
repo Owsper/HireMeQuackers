@@ -7,7 +7,7 @@ requires-python = ">=3.10"
 authors = [
     { name = "HireMeQuackers" }
 ]
-keywords = ["jobs", "ai", "gemini", "sqlite", "streamlit", "recruitment"]
+keywords = ["jobs", "ai", "gemini", "sqlite", "cli", "recruitment"]
 classifiers = [
     "Environment :: Console",
     "Intended Audience :: End Users/Desktop",
@@ -27,10 +27,12 @@ dependencies = [
     "feedparser>=6",
     "python-docx>=1",
     "reportlab>=4",
-    "streamlit>=1.30",
 ]
 
-[optional-dependencies]
+[project.scripts]
+quackers = "quackers.cli:main"
+
+[project.optional-dependencies]
 dev = [
     "pytest>=8",
     "pytest-mock>=3",
@@ -63,7 +65,7 @@ packages = [
     "database",
     "services",
     "sources",
-    "ui",
+    "quackers",
     "documents",
 ]
 

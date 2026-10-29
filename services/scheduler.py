@@ -4,8 +4,8 @@ Default: does NOT auto-scan. Users MUST click [Scan for new jobs now]
 which invokes `OnDemandScheduler.run_scan`.
 
 An optional daily cron is stubbed out; it is disabled by default and not
-wired into the Streamlit app unless the user explicitly re-enables it
-(from the scheduler module, then restart the app).
+wired into the CLI. For periodic scans, schedule `quackers scan` with cron
+or Windows Task Scheduler instead.
 """
 from __future__ import annotations
 

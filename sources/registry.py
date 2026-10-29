@@ -25,6 +25,7 @@ def register(source_cls: type[JobSource]) -> type[JobSource]:
 
 def list_sources() -> List[JobSource]:
     """Return instances of every registered source (not to mutate them)."""
+    ensure_loaded()
     out: List[JobSource] = []
     for cls in REGISTRY.values():
         try:

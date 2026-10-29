@@ -135,7 +135,9 @@ class RemoteOkSource(JobSource):
         for raw in items:
             if not isinstance(raw, dict):
                 continue
-            title = str(raw.get("title") or "").strip()
+            # The live API names the job title "position"; "title" is kept
+            # as a fallback for older payloads / test fixtures.
+            title = str(raw.get("position") or raw.get("title") or "").strip()
             url = str(raw.get("url") or "").strip()
             if not title or not url:
                 continue

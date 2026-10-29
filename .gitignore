@@ -18,10 +18,6 @@ __pycache__/
 .vscode/
 *.iml
 
-# Streamlit
-.streamlit/secrets.toml
-.streamlit/config.toml
-
 # Runtime data (kept with .gitkeep only)
 data/
 !data/.gitkeep
