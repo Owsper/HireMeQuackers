@@ -192,3 +192,10 @@ def test_agent_unavailable_without_key(monkeypatch):
 def test_handle_line_ignores_byte_order_mark():
     tree = shell.command_tree(cli.build_parser())
     assert shell.handle_line("\ufeff/exit", tree, _OffAgent()) is False
+
+
+def test_scan_tool_passes_titles_and_locations():
+    argv = agent_mod.build_argv("scan_for_jobs", {"titles": ["Data Analyst", "BI Intern"],
+                                                  "locations": ["Berlin"]})
+    assert argv == ["scan", "--titles", "Data Analyst, BI Intern", "--location", "Berlin"]
+    assert cli.build_parser().parse_args(argv).titles == "Data Analyst, BI Intern"

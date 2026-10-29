@@ -311,8 +311,30 @@ def _print_scan_result(result: Dict[str, Any]) -> None:
         term.info("\nSee the new jobs with `quackers jobs --new`.")
 
 
+NO_CV_MESSAGE = (
+    "No CV. Add one with `quackers cv <file.pdf|.docx|.json>`, or scan without a CV:\n"
+    '  quackers scan --titles "Data Analyst, BI Intern" --location "Berlin, Munich"'
+)
+
+
+def apply_scan_overrides(cfg, titles: List[str], locations: List[str]):
+    """Apply one-off --titles / --location to a config (not persisted)."""
+    if titles:
+        cfg.primary_title = titles[0]
+        cfg.title_synonyms = titles[1:]
+        # The query planner builds role queries from include_keywords.
+        cfg.include_keywords = list(dict.fromkeys([*titles, *cfg.include_keywords]))
+    if locations:
+        cfg.locations = locations
+    return cfg
+
+
 def cmd_scan(args) -> None:
-    cfg = load_config()
+    titles = _split_list(args.titles or "")
+    locations = _split_list(args.location or "")
+    if store.load_active_profile() is None and not (titles and locations):
+        raise CliError(NO_CV_MESSAGE)
+    cfg = apply_scan_overrides(load_config(), titles, locations)
     if args.source:
         cfg.enabled_sources = list(args.source)
     result = _run_scan(cfg, evaluate=not args.no_ai)
@@ -942,6 +964,55 @@ def cmd_profile_edit(args) -> None:
     term.ok(f"Saved profile #{updated.id} (v{updated.profile_version}).")
 
 
+CV_JSON_KEYS = ("name", "email", "phone", "linkedin", "website", "summary", "skills",
+                "certifications", "achievements", "experience", "education", "projects",
+                "languages")
+
+
+def _load_cv_json(path: Path) -> Dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CliError(f"Could not read JSON CV: {exc}") from exc
+    if not isinstance(data, dict):
+        raise CliError("JSON CV must be an object, e.g. "
+                       '{"name": "Ada", "skills": ["Python", "SQL"], "experience": ["..."]}')
+    unknown = sorted(set(data) - set(CV_JSON_KEYS) - {"cv_path"})
+    if unknown:
+        term.warn(f"Ignoring unknown CV fields: {', '.join(unknown)}")
+    form = {k: data.get(k) for k in CV_JSON_KEYS if data.get(k) is not None}
+    form["cv_path"] = str(path)
+    return form
+
+
+def cmd_cv(args) -> None:
+    """Show the active CV, or load a new one from PDF / DOCX / JSON."""
+    if not args.path:
+        if store.load_active_profile() is None:
+            raise CliError(NO_CV_MESSAGE)
+        cmd_profile_show(argparse.Namespace(profile_id=None))
+        return
+
+    path = Path(args.path).expanduser().resolve()
+    if not path.is_file():
+        raise CliError(f"File not found: {path}")
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        from services import candidate_profile as cp
+
+        if path.stat().st_size > MAX_CV_BYTES:
+            raise CliError("File too large (max 15 MB).")
+        fields = _form_to_fields(_load_cv_json(path))
+        p = cp.upsert_from_extraction(fields, active=True)
+        term.ok(f"CV loaded from JSON: profile #{p.id} — {p.name} (v{p.profile_version}), active.")
+    elif suffix in {".pdf", ".docx"}:
+        cmd_profile_import(argparse.Namespace(
+            cv_file=str(path), edit=False, inactive=False, yes=True))
+    else:
+        raise CliError(f"Unsupported CV type {suffix or '(none)'}: use .pdf, .docx or .json.")
+    term.info("Next: `quackers scan`")
+
+
 def cmd_profile_activate(args) -> None:
     from services import candidate_profile as cp
 
@@ -1226,7 +1297,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-ai", action="store_true", help="skip Gemini scoring (deterministic only)")
     s.add_argument("--source", action="append", metavar="NAME",
                    help="only scan this source (repeatable)")
+    s.add_argument("--titles", metavar='"A, B"',
+                   help="job titles to search for, comma-separated (required without a CV)")
+    s.add_argument("--location", metavar='"X, Y"',
+                   help="locations, comma-separated (required without a CV)")
     s.set_defaults(func=cmd_scan)
+
+    s = sub.add_parser("cv", help="load your CV (PDF / DOCX / JSON), or show the current one")
+    s.add_argument("path", nargs="?", help="CV file; omit to show the active CV")
+    s.set_defaults(func=cmd_cv)
 
     s = sub.add_parser("jobs", help="list discovered jobs")
     s.add_argument("--min-score", type=float, help="hide jobs scored below this (0-100)")

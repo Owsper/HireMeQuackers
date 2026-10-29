@@ -55,6 +55,10 @@ def _scan(a: Dict[str, Any]) -> List[str]:
         argv.append("--no-ai")
     for src in a.get("sources") or []:
         argv += ["--source", str(src)]
+    if a.get("titles"):
+        argv += ["--titles", ", ".join(map(str, a["titles"]))]
+    if a.get("locations"):
+        argv += ["--location", ", ".join(map(str, a["locations"]))]
     return argv
 
 
@@ -117,6 +121,11 @@ TOOLS: Dict[str, Tuple[str, Schema, ArgvBuilder]] = {
             "no_ai": {"type": "boolean", "description": "Skip Gemini scoring (faster, no API quota)."},
             "sources": {"type": "array", "items": {"type": "string"},
                         "description": "Only scan these source names (see list_sources)."},
+            "titles": {"type": "array", "items": {"type": "string"},
+                       "description": "Job titles for this scan only. Required (with locations) "
+                                      "when the user has no CV loaded."},
+            "locations": {"type": "array", "items": {"type": "string"},
+                          "description": "Locations for this scan only."},
         }), _scan),
     "list_jobs": (
         "List discovered jobs with optional filters.",

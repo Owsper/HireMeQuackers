@@ -227,6 +227,25 @@ quackers status            # overview: counts, last scan, recent jobs, follow-up
 
 If the `quackers` command is not found, `python -m quackers ...` works the same way.
 
+Load your CV, then scan:
+
+```bash
+quackers cv path/to/cv.pdf        # .pdf, .docx or .json
+quackers cv                        # show the active CV
+quackers scan                      # uses your CV + saved search settings
+```
+
+No CV? `quackers scan` answers "No CV" unless you say what to look for:
+
+```bash
+quackers scan --titles "Data Analyst, BI Intern" --location "Berlin, Munich"
+```
+
+`--titles` / `--location` apply to that scan only (also usable with a CV).
+A JSON CV uses the same fields as `quackers profile edit`:
+`{"name": "Ada", "email": "ada@example.com", "skills": ["Python", "SQL"],
+"experience": ["Data intern at X (2025)"], "education": ["BSc Mathematics"]}`.
+
 A typical first session:
 
 ```bash
