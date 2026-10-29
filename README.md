@@ -185,6 +185,38 @@ SQLite database. The `output/` directory stores generated CVs and letters.
 
 ## Running the Application
 
+### Interactive session
+
+Run `quackers` with no arguments to open an interactive session, similar to
+Claude Code:
+
+```text
+╭──────────────────────────────────────────────╮
+│ 🦆 Welcome to HireMeQuackers!                │
+│   /help for commands · or just type          │
+│   profile: Ada Lovelace (v1)                 │
+│   jobs: 99 · last scan: 2026-10-29 09:26     │
+│   AI: on (gemini-2.0-flash)                  │
+╰──────────────────────────────────────────────╯
+
+> find remote data internships and show the best 5
+● scan_for_jobs(no_ai=False)
+● list_jobs(sort_by_score=True, limit=5)
+  ...
+```
+
+- Lines starting with `/` run commands: `/scan`, `/jobs --new`, `/job 12`,
+  `/app set 12 shortlisted`, ... `Tab` completes command names, `↑` recalls history.
+- Anything else is sent to Gemini, which calls the same commands as tools and
+  answers in your language. This needs `GEMINI_API_KEY` in `.env`
+  (set `GEMINI_MODEL` to change the model); without it, `/commands` still work.
+- `/help` lists everything, `/clear` starts a new conversation, `/exit` or
+  `Ctrl+C` twice quits.
+- For safety the AI cannot reset data, change profiles, open URLs or export
+  files, and marking a job as **applied** always asks you to confirm.
+
+### Single commands
+
 > Make sure your virtual environment is **activated** and you ran `pip install -e .`
 > (this installs the `quackers` command).
 
@@ -444,6 +476,7 @@ Test files (created in `tests/`):
 - `test_web_search_provider.py` — web-search source provider integration
 - `test_dashboard_diagnostics.py` — per-source diagnostics status rows (`quackers scan`)
 - `test_cli.py` — command routing, config coercion, terminal-output sanitising
+- `test_shell.py` — interactive session, slash completion, Gemini tool loop (faked)
 - `test_sources_new.py` — RemoteOK, HackerNews, EURES adapters
 - `test_feed_registry.py` — bundled RSS feed list
 
@@ -646,6 +679,8 @@ HireMeQuackers/
 │
 ├── quackers/              # Command-line interface (`quackers`)
 │   ├── cli.py              # argparse commands: scan, jobs, job, app, docs, profile, config, ...
+│   ├── shell.py            # interactive session (`quackers` with no arguments)
+│   ├── agent.py            # Gemini natural-language mode (tools = CLI commands)
 │   ├── store.py            # DB session + row-to-dict helpers used by the commands
 │   ├── term.py             # Terminal output: tables, colours, prompts, control-char stripping
 │   └── __main__.py         # `python -m quackers`

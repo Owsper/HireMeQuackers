@@ -4,7 +4,8 @@ Replaces the former Streamlit dashboard. Every command is a thin layer over
 the existing `services/`, `database/` and `config/` modules; no business
 logic lives here.
 
-Run `quackers --help` (or `python -m quackers --help`) for the command list.
+Run `quackers` alone for the interactive session, or `quackers --help` for the
+command list.
 """
 from __future__ import annotations
 
@@ -1394,10 +1395,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     term.setup_stdout()
-    args = build_parser().parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
 
     from services.logger import setup_logging
 
+    if not argv:  # bare `quackers` opens the interactive session
+        setup_logging()
+        store.ensure_db()
+        from quackers import shell
+
+        return shell.run()
+
+    args = build_parser().parse_args(argv)
     setup_logging()
     store.ensure_db()
     try:
