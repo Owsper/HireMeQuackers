@@ -187,3 +187,8 @@ def test_agent_unavailable_without_key(monkeypatch):
         settings.get_config.cache_clear()
     agent = agent_mod.Agent(lambda argv: (True, ""))
     assert not agent.available and "GEMINI_API_KEY" in agent.unavailable_reason
+
+
+def test_handle_line_ignores_byte_order_mark():
+    tree = shell.command_tree(cli.build_parser())
+    assert shell.handle_line("﻿/exit", tree, _OffAgent()) is False
