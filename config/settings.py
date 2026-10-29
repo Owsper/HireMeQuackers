@@ -19,10 +19,19 @@ from pydantic import BaseModel, Field, field_validator
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+_ENV_LOADED = False
+
+
 def _load_env_file() -> None:
-    """Load .env file from project root (idempotent)."""
-    if load_dotenv is None:
+    """Load .env from the project root (cwd as fallback), once per process.
+
+    override=False: variables already present in the OS environment win.
+    Edits made while the app runs take effect on the next start.
+    """
+    global _ENV_LOADED
+    if load_dotenv is None or _ENV_LOADED:
         return
+    _ENV_LOADED = True
     for base in (PROJECT_ROOT, Path.cwd()):
         env_file = base / ".env"
         if env_file.exists():

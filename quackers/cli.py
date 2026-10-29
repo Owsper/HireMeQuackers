@@ -1301,6 +1301,144 @@ def cmd_reset(args) -> None:
 
 
 # ---------------------------------------------------------------------------
+# quacker setenv
+# ---------------------------------------------------------------------------
+
+
+def _ask(prompt: str, choices: str) -> str:
+    """Single-letter menu choice; EOF / Ctrl+C count as cancel ('c')."""
+    try:
+        answer = input(prompt).strip().lower()[:1]
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return "c"
+    return answer if answer in choices else ""
+
+
+def _show_env_settings(values: Dict[str, str]) -> None:
+    import os
+
+    from quackers import envfile
+
+    rows = []
+    for var in envfile.ENV_VARS:
+        if var.name in values:
+            source, value = ".env", values[var.name]
+        elif var.name in os.environ:
+            source, value = "OS environment", os.environ[var.name]
+        else:
+            source, value = "default", None
+        shown = envfile.describe_value(var.name, value)
+        if value is None and var.default:
+            shown = f"default ({var.default})"
+        rows.append({"setting": var.name, "value": shown, "from": source,
+                     "what": var.description})
+    term.table(rows, ["setting", "value", "from", "what"],
+               max_widths={"value": 26, "what": 60})
+    extra = sorted(set(values) - set(envfile.KNOWN))
+    if extra:
+        term.info(f"\nOther variables in .env: {', '.join(extra)}")
+    term.info("\nEvery setting is optional. OS environment variables override .env.")
+
+
+def _is_interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def cmd_quacker_setenv(args) -> None:
+    from quackers import envfile
+
+    if not _is_interactive():
+        raise CliError(
+            "`quacker setenv` is interactive and needs a terminal. "
+            f"To configure non-interactively, edit {envfile.env_path()} "
+            "(see .env.example for the available settings).")
+
+    path = envfile.env_path()
+    term.heading("Environment configuration")
+    term.info("  .env holds API keys and settings (Gemini, web search, storage).")
+    term.info("  It is read once at startup; your OS environment variables take precedence.")
+    term.kv([("File", str(path))])
+
+    root = path.parent
+    if envfile.ensure_gitignored(root):
+        term.ok("Added .env to .gitignore so it is never committed.")
+    if envfile.git_tracks(path):
+        term.warn(
+            ".env is TRACKED by git, so its secrets may already be in the repository history. "
+            "Run `git rm --cached .env` and commit, then rotate any keys it contained "
+            "(.gitignore alone does not untrack a file). Nothing was changed automatically.")
+
+    if path.exists():
+        try:
+            original = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise CliError(f"Cannot read {path}: {exc}") from exc
+        while True:
+            choice = _ask("\n  [e]dit  [s]how settings  [c]ancel > ", "esc")
+            if choice == "s":
+                _show_env_settings(envfile.parse(original).values)
+            elif choice == "e":
+                break
+            elif choice == "c":
+                term.info("Cancelled. Nothing was changed.")
+                return
+        text = original
+    else:
+        term.info("\n  No .env file yet.")
+        if not term.confirm("  Create it from the template (all settings commented out)?"):
+            term.info("Cancelled. Nothing was created.")
+            return
+        original = None
+        text = envfile.template()
+
+    old_values = envfile.parse(original).values if original is not None else {}
+    while True:
+        term.info("  Opening your editor… save and close it to continue.")
+        try:
+            edited = term.edit_text(text, label="env", suffix=".env")
+        except ValueError as exc:
+            raise CliError(f"{exc}\nNothing was saved.") from exc
+        if edited is None:
+            if original is not None:
+                term.info("No changes. Nothing was saved.")
+                return
+            if not term.confirm("  Template unchanged. Save it as-is?"):
+                term.info("Cancelled. Nothing was created.")
+                return
+            edited = text
+        result = envfile.parse(edited)
+        for warning in result.warnings:
+            term.warn(warning)
+        if not result.errors:
+            break
+        for err in result.errors:
+            term.error(err)
+        if not term.confirm("  Fix these in the editor?"):
+            term.info("Cancelled. The existing file was not changed.")
+            return
+        text = edited
+
+    try:
+        created = envfile.write_atomic(path, edited)
+    except OSError as exc:
+        raise CliError(f"Could not write {path}: {exc}. Nothing was changed.") from exc
+
+    changes = envfile.summarize_changes(old_values, result.values)
+    term.ok(f"{'Created' if created else 'Saved'} {path}")
+    labels = {"added": "Added", "changed": "Changed", "removed": "Removed"}
+    summary = [(labels[k], ", ".join(v)) for k, v in changes.items() if v]
+    if summary:
+        term.kv(summary)
+    else:
+        term.info("  No variables changed (comments / formatting only).")
+    secrets = [n for n in result.values if envfile.is_secret(n) and result.values[n]]
+    if secrets:
+        term.info(f"  Secrets set (values hidden): {', '.join(sorted(secrets))}")
+    term.info("  Restart quackers for the changes to take effect.")
+
+
+# ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
 
@@ -1492,6 +1630,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("scan_id", type=int)
     s.add_argument("--no-ai", action="store_true")
     s.set_defaults(func=cmd_history_rerun)
+
+    qk = sub.add_parser("quacker", help="app settings (.env, API keys)").add_subparsers(
+        dest="quacker_command", metavar="<action>")
+    qk.required = True
+    s = qk.add_parser("setenv", help="create or edit the .env file (API keys, models, providers)")
+    s.set_defaults(func=cmd_quacker_setenv)
 
     s = sub.add_parser("reset", help="delete job-search data (asks first)")
     s.add_argument("--scope", choices=["current", "all"], default="current",

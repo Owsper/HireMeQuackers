@@ -137,41 +137,39 @@ pip install PyMuPDF
 
 ## Configuration
 
-After installing, create a `.env` file in the project root. (`.env` is git-ignored — there is no `.env.example` template in the repo, so create it by hand.) A minimal working file:
+All settings live in `.env` in the project root and **all are optional** — the
+app runs without any of them. The easiest way to create or edit it:
 
 ```bash
-# .env — all keys optional; app runs without any of these
-GEMINI_API_KEY=
-GEMINI_MODEL=gemini-2.0-flash
-DATABASE_URL=sqlite:///./data/jobs.db
-BRAVE_SEARCH_API_KEY=
-EURES_API_URL=
-APP_ENV=local
-LOG_LEVEL=INFO
+quackers quacker setenv        # or /quacker setenv inside the interactive session
 ```
-Then open `.env` in a text editor and fill in your values:
+
+It explains each setting, creates `.env` from the template if it is missing,
+opens it in your editor (`$VISUAL` / `$EDITOR`, otherwise Notepad on Windows
+or nano/vim elsewhere), validates the syntax, saves atomically and lists which
+variables changed — never their values. `[s]how settings` displays where each
+value comes from (`.env`, OS environment or default) with secrets hidden.
+Restart `quackers` afterwards: `.env` is read once at startup.
+
+You can also copy `.env.example` to `.env` and edit it by hand.
+`.env` is git-ignored; never commit it.
 
 | Variable | Default | Description |
 |---|---|---|
-| `GEMINI_API_KEY` | *(empty)* | Your Gemini API key (get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)). Optional — app runs without it. |
-| `GEMINI_MODEL` | `gemini-2.0-flash` | Model name to use for AI matching |
-| `BRAVE_SEARCH_API_KEY` | *(empty)* | Brave Search API key for better web-search recall. Optional — DuckDuckGo fallback is automatic. |
-| `EURES_API_URL` | *(empty)* | Endpoint to an EURES API. Optional — the EURES source is skipped (not failed) when unset. |
-| `DATABASE_URL` | `sqlite:///./data/jobs.db` | SQLite database path |
-| `SCAN_MAX_SOURCES` | `13` | How many sources to scan per run (currently 13 registered) |
-| `SCAN_BUDGET_SECONDS` | `300` | Hard time budget per scan |
-| `SCAN_MAX_TOTAL_QUERIES` | `40` | Cap on how many distinct queries the query planner generates per scan |
-| `SCAN_REQUEST_CAP_PER_SOURCE` | `60` | Max HTTP requests a single source can make in one scan |
-| `ENRICHMENT_MAX_PER_SCAN` | `25` | How many new jobs get detail-page enrichment per scan |
-| `ENRICHMENT_DELAY_SECONDS` | `1.5` | Rate-limit between enrichment HTTP calls |
-| `REQUEST_TIMEOUT_SECONDS` | `15` | HTTP timeout for source requests |
-| `MAX_RETRY_ATTEMPTS` | `3` | Retry count per source |
-| `RATE_LIMIT_MIN_SECONDS` | `1.0` | Minimum pause between source requests |
-| `MAX_RESPONSE_BYTES` | `3145728` | Response size cap (3 MB) |
-| `ENABLE_AI_MATCHING` | `true` | Toggle Gemini evaluation on/off |
-| `ENABLE_PDF_EXPORT` | `true` | Enable PDF export of generated docs |
-| `APP_ENV` | `local` | Environment label |
-| `LOG_LEVEL` | `INFO` | Logging verbosity |
+| `GEMINI_API_KEY` | *(empty)* | AI match scoring, cover letters and plain-text questions. Get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey). |
+| `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model id |
+| `ENABLE_AI_MATCHING` | `true` | Score jobs with Gemini during scans |
+| `ENABLE_AI_DIRECTION` | `false` | Let Gemini word CV-tailoring suggestions |
+| `SEARCH_PROVIDER` | `brave` | Web-search backend: `brave`, `exa` or `duckduckgo` |
+| `BRAVE_SEARCH_API_KEY` | *(empty)* | Brave Search API key ([brave.com/search/api](https://brave.com/search/api/)); without it web search falls back to DuckDuckGo |
+| `EXA_API_KEY` | *(empty)* | Exa API key, used when `SEARCH_PROVIDER=exa` |
+| `EURES_API_URL` | *(empty)* | EURES endpoint; the EURES source is skipped when unset |
+| `ENRICHMENT_MAX_PER_SCAN` | `25` | New jobs re-fetched for full details per scan |
+| `ENRICHMENT_DELAY_SECONDS` | `1.5` | Pause between those detail fetches |
+| `DATABASE_URL` | `sqlite:///./data/jobs.db` | SQLAlchemy database URL |
+| `DATA_DIR` | `<project>/data` | Folder for CV copies, generated documents and logs |
+
+Variables already set in your OS environment take precedence over `.env`.
 
 > **Gemini rate limit:** The Gemini free tier allows ~10 requests/hour and ~1,000/day.
 > `GEMINI_API_KEY` is an optional convenience: when calls hit a quota limit or the key
@@ -498,6 +496,7 @@ Test files (created in `tests/`):
 - `test_dashboard_diagnostics.py` — per-source diagnostics status rows (`quackers scan`)
 - `test_cli.py` — command routing, config coercion, terminal-output sanitising
 - `test_shell.py` — interactive session, slash completion, Gemini tool loop (faked)
+- `test_setenv.py` — banner, `quacker setenv` flows, .env parsing / atomic writes / precedence
 - `test_sources_new.py` — RemoteOK, HackerNews, EURES adapters
 - `test_feed_registry.py` — bundled RSS feed list
 
@@ -702,6 +701,8 @@ HireMeQuackers/
 │   ├── cli.py              # argparse commands: scan, jobs, job, app, docs, profile, config, ...
 │   ├── shell.py            # interactive session (`quackers` with no arguments)
 │   ├── agent.py            # Gemini natural-language mode (tools = CLI commands)
+│   ├── banner.py           # ASCII-art banner for the interactive session
+│   ├── envfile.py          # .env template, validation and safe writes (quacker setenv)
 │   ├── store.py            # DB session + row-to-dict helpers used by the commands
 │   ├── term.py             # Terminal output: tables, colours, prompts, control-char stripping
 │   └── __main__.py         # `python -m quackers`

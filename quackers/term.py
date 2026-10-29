@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -206,39 +207,65 @@ def confirm(prompt: str, *, assume_yes: bool = False) -> bool:
     return answer in {"y", "yes"}
 
 
+NO_EDITOR_HELP = (
+    "No text editor found. Set one, e.g.\n"
+    '  PowerShell:  $env:EDITOR = "notepad"      (or "code --wait")\n'
+    "  bash/zsh:    export EDITOR=nano          (or vim, or 'code --wait')"
+)
+
+
 def _editor_command() -> List[str]:
+    """$VISUAL, then $EDITOR, then the first installed fallback editor."""
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
     if editor:
         return shlex.split(editor, posix=os.name != "nt")
-    return ["notepad"] if os.name == "nt" else ["nano"]
+    fallbacks = ["notepad"] if os.name == "nt" else ["nano", "vim", "vi"]
+    for name in fallbacks:
+        if shutil.which(name):
+            return [name]
+    raise ValueError(NO_EDITOR_HELP)
+
+
+def edit_text(text: str, *, label: str, suffix: str = ".txt") -> Optional[str]:
+    """Open `text` in the user's editor; return the edited text.
+
+    Returns None when the file comes back unchanged. The temp file is created
+    with mkstemp (owner-only permissions on POSIX) and always deleted, because
+    callers may pass secrets. Raises ValueError if no editor can be started or
+    the editor reports a failure.
+    """
+    fd, name = tempfile.mkstemp(prefix=f"quackers-{label}-", suffix=suffix)
+    path = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+        command = _editor_command()
+        try:
+            code = subprocess.call(command + [str(path)])
+        except OSError as exc:
+            raise ValueError(f"Could not start editor {command[0]!r} ({exc}).\n{NO_EDITOR_HELP}") from exc
+        if code != 0:
+            raise ValueError(f"Editor {command[0]!r} exited with code {code}; nothing was saved.")
+        edited = path.read_text(encoding="utf-8")
+    finally:
+        path.unlink(missing_ok=True)
+    return None if edited == text else edited
 
 
 def edit_json(data: Dict[str, Any], *, label: str) -> Optional[Dict[str, Any]]:
     """Open `data` as JSON in the user's editor and return the edited dict.
 
     Returns None when the user leaves the file unchanged. Raises ValueError
-    on invalid JSON (the temp file path is included so nothing is lost).
+    on invalid JSON or editor problems.
     """
     original = json.dumps(data, indent=2, ensure_ascii=False, default=str) + "\n"
-    fd, name = tempfile.mkstemp(prefix=f"quackers-{label}-", suffix=".json")
-    path = Path(name)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(original)
-    try:
-        subprocess.call(_editor_command() + [str(path)])
-    except FileNotFoundError as exc:
-        raise ValueError(
-            f"Editor not found ({exc}). Set the EDITOR environment variable."
-        ) from exc
-    edited = path.read_text(encoding="utf-8")
-    if edited == original:
-        path.unlink(missing_ok=True)
+    edited = edit_text(original, label=label, suffix=".json")
+    if edited is None:
         return None
     try:
         parsed = json.loads(edited)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid JSON ({exc}). Your edits are kept in {path}") from exc
+        raise ValueError(f"Invalid JSON ({exc}); nothing was saved.") from exc
     if not isinstance(parsed, dict):
-        raise ValueError(f"Expected a JSON object. Your edits are kept in {path}")
-    path.unlink(missing_ok=True)
+        raise ValueError("Expected a JSON object; nothing was saved.")
     return parsed

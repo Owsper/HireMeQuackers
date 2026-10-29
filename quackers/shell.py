@@ -102,36 +102,30 @@ def _width() -> int:
         return 80
 
 
-def _box(lines: List[str], width: int) -> None:
-    inner = width - 4
-    print(term.style("╭" + "─" * (width - 2) + "╮", "cyan"))
-    for line in lines:
-        visible = term._cell_width(term._ANSI_RE.sub("", line))  # noqa: SLF001
-        pad = max(0, inner - visible)
-        print(term.style("│ ", "cyan") + line + " " * pad + term.style(" │", "cyan"))
-    print(term.style("╰" + "─" * (width - 2) + "╯", "cyan"))
-
-
 def banner(agent) -> None:
+    from quackers import banner as art
+
     profile = store.load_active_profile()
     jobs = store.list_jobs_with_match(limit=10000)
     last = store.latest_scan_dict(limit=1)
     if profile:
         who = f"{term.clean(profile.name)} (v{profile.profile_version})"
     else:
-        who = "none — /profile import <cv>"
+        who = "none — /cv <file.pdf|.docx|.json>"
     ai = (term.style(f"on ({agent.model})", "green") if agent.available
-          else term.style(f"off — {agent.unavailable_reason}", "yellow"))
-    lines = [
-        term.style("🦆 Welcome to HireMeQuackers!", "bold"),
-        "",
-        term.style("  /help for commands · or just type what you want", "dim"),
-        "",
-        f"  profile: {who}",
-        f"  jobs: {len(jobs)} · last scan: {last['started_at'] if last else 'never'}",
-        f"  AI: {ai}",
-    ]
-    _box(lines, min(_width(), 64))
+          else term.style(f"off — {agent.unavailable_reason} (/quacker setenv)", "yellow"))
+    print()
+    for line in art.render(_width()):
+        print(line)
+    print(term.style("  local-first AI job hunting 🦆", "dim"))
+    print()
+    term.kv([
+        ("profile", who),
+        ("jobs", f"{len(jobs)} · last scan: {last['started_at'] if last else 'never'}"),
+    ])
+    print(f"  {term.style('AI'.ljust(7), 'dim')}  {ai}")
+    print()
+    print(term.style("  /help for commands · or just type what you want", "dim"))
 
 
 def print_help(tree: CommandTree, agent) -> None:
