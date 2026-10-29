@@ -191,4 +191,4 @@ def test_agent_unavailable_without_key(monkeypatch):
 
 def test_handle_line_ignores_byte_order_mark():
     tree = shell.command_tree(cli.build_parser())
-    assert shell.handle_line("﻿/exit", tree, _OffAgent()) is False
+    assert shell.handle_line("\ufeff/exit", tree, _OffAgent()) is False
