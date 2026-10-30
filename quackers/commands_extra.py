@@ -540,35 +540,75 @@ def _search_langs(cfg) -> List[str]:
     return search_languages(cfg)
 
 
+LANG_HELP = """\
+/lang                 show selected and available search languages
+/lang DE              add German (codes are ISO 639-1, any case)
+/lang DE RU EN        add several at once (existing selections are kept)
+/lang clear           back to the defaults (English + the local language of the place)
+/lang help            this help
+Search languages only decide which languages job titles are searched in.
+They do not change the languages listed in your CV."""
+
+
+def _lang_label(code: str) -> str:
+    from services.multilingual import LANGUAGE_LABELS
+
+    return f"{code.upper()} {LANGUAGE_LABELS.get(code, code)}"
+
+
 def cmd_lang(args) -> None:
-    """Show or set the languages job titles are searched in (`/lang de fr`)."""
-    from services.multilingual import SUPPORTED
+    """Show / add / clear the languages job titles are searched in (`/lang DE RU`).
+
+    Only ``search_languages`` / ``include_english`` of the saved search
+    config change; the applicant's CV languages are never touched.
+    """
+    from config.search_config import SearchConfig
+    from services.multilingual import LANGUAGE_LABELS
 
     cli = _cli()
+    words = [c.strip() for c in re.split(r"[,\s]+", " ".join(args.languages or [])) if c.strip()]
+    action = words[0].lower() if words else ""
+    if action in ("help", "-h", "?"):
+        term.info(LANG_HELP)
+        return
     cfg = cli.load_config()
     changed = False
-    if args.languages:
-        codes = [c.strip().lower() for c in re.split(r"[,\s]+", " ".join(args.languages)) if c.strip()]
-        if codes == ["auto"]:
-            codes = []
-        bad = [c for c in codes if c not in SUPPORTED]
-        if bad:
-            raise cli.CliError(f"Unknown language(s) {', '.join(bad)}. Supported: {', '.join(SUPPORTED)}")
-        cfg.search_languages = codes
+    if action in ("clear", "auto", "reset", "default"):
+        defaults = SearchConfig()
+        cfg.search_languages = list(defaults.search_languages)
+        cfg.include_english = defaults.include_english
         changed = True
+        term.ok("Search languages reset to the defaults.")
+    elif words:
+        codes = [w.lower() for w in words]
+        bad = [w for w in words if w.lower() not in LANGUAGE_LABELS]
+        if bad:
+            raise cli.CliError(
+                f"Unknown language code(s): {', '.join(bad)}. Use two-letter ISO 639-1 codes, "
+                "e.g. /lang DE RU EN — `/lang` lists them all.")
+        added, already = [], []
+        for c in dict.fromkeys(codes):
+            (already if c in cfg.search_languages else added).append(c)
+        cfg.search_languages = [*cfg.search_languages, *added]
+        if added:
+            changed = True
+            term.ok("Added: " + ", ".join(_lang_label(c) for c in added))
+        if already:
+            term.info("Already selected: " + ", ".join(_lang_label(c) for c in already))
     if args.no_english is not None:
         cfg.include_english = not args.no_english
         changed = True
     if changed:
         cli._save_config(cfg)
-        term.ok("Search languages saved.")
     term.kv([
-        ("Searching in", ", ".join(_search_langs(cfg))),
-        ("Extra languages", ", ".join(cfg.search_languages) or "none (English + local only)"),
-        ("Local language of locations", "yes" if cfg.auto_detect_local_language else "no"),
+        ("Selected", ", ".join(_lang_label(c) for c in cfg.search_languages)
+         or "none — default: English + local language of the place"),
+        ("Searching in now", ", ".join(_lang_label(c) for c in _search_langs(cfg))),
         ("English too", "yes" if cfg.include_english else "no"),
     ])
-    term.info("Supported: " + ", ".join(SUPPORTED) + "   (`lang auto` = English + local only)")
+    if not words:
+        term.info("Available: " + "  ".join(_lang_label(c) for c in LANGUAGE_LABELS))
+        term.info("Add with /lang DE RU EN · reset with /lang clear · /lang help")
 
 
 def register(sub) -> None:
@@ -583,7 +623,8 @@ def register(sub) -> None:
     s.set_defaults(func=cmd_search)
 
     s = sub.add_parser("lang", help="show / set the languages job titles are searched in")
-    s.add_argument("languages", nargs="*", help="ISO codes, e.g. de fr  (or: auto)")
+    s.add_argument("languages", nargs="*",
+                   help="ISO 639-1 codes to add (DE RU EN), or: clear / help")
     g = s.add_mutually_exclusive_group()
     g.add_argument("--no-english", dest="no_english", action="store_true", default=None,
                    help="don't search English titles")

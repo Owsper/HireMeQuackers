@@ -12,11 +12,24 @@ import re
 from typing import Dict, Iterable, List, Optional, Sequence
 
 #: Languages the dictionaries below cover.
-#: Languages that can be selected with `lang`.  Title translations exist for
-#: part of them; for the others only the user's own wording is searched.
-SUPPORTED = ("en", "de", "fr", "nl", "es", "it", "pl", "pt", "ru", "ja", "ar", "zh",
-             "ko", "tr", "sv", "da", "no", "fi", "cs", "hu", "ro", "el", "uk", "he",
-             "hi", "id", "th", "vi", "ms")
+#: ISO 639-1 search languages selectable with `/lang` (code -> English name).
+#: Title translations exist for part of them; for the others only the user's
+#: own wording is searched.
+LANGUAGE_LABELS: Dict[str, str] = {
+    "en": "English", "de": "German", "fr": "French", "es": "Spanish", "it": "Italian",
+    "pt": "Portuguese", "nl": "Dutch", "pl": "Polish", "ru": "Russian", "uk": "Ukrainian",
+    "sv": "Swedish", "no": "Norwegian", "da": "Danish", "fi": "Finnish", "el": "Greek",
+    "cs": "Czech", "sk": "Slovak", "hu": "Hungarian", "ro": "Romanian", "bg": "Bulgarian",
+    "hr": "Croatian", "sr": "Serbian", "sl": "Slovenian", "tr": "Turkish", "ar": "Arabic",
+    "he": "Hebrew", "fa": "Persian", "hi": "Hindi", "bn": "Bengali", "ur": "Urdu",
+    "pa": "Punjabi", "ta": "Tamil", "te": "Telugu", "zh": "Chinese", "ja": "Japanese",
+    "ko": "Korean", "vi": "Vietnamese", "th": "Thai", "id": "Indonesian", "ms": "Malay",
+    "tl": "Tagalog", "sw": "Swahili", "am": "Amharic", "ha": "Hausa", "yo": "Yoruba",
+    "ig": "Igbo", "so": "Somali", "af": "Afrikaans", "zu": "Zulu", "kk": "Kazakh",
+    "uz": "Uzbek", "ka": "Georgian", "hy": "Armenian", "az": "Azerbaijani", "et": "Estonian",
+    "lv": "Latvian", "lt": "Lithuanian", "is": "Icelandic", "si": "Sinhala",
+}
+SUPPORTED = tuple(LANGUAGE_LABELS)
 
 #: Level words handled separately from the role part of a title.
 _LEVELS = ("working student", "intern", "apprentice", "graduate", "junior")
@@ -109,6 +122,12 @@ TITLE_TERMS: Dict[str, Dict[str, tuple[str, ...]]] = {
         "nl": ("softwareontwikkelaar",), "es": ("desarrollador de software",),
         "it": ("sviluppatore software",), "pl": ("programista",),
         "pt": ("desenvolvedor de software",), "ru": ("разработчик",),
+    },
+    "developer": {
+        "de": ("Entwickler",), "fr": ("développeur",), "nl": ("ontwikkelaar",),
+        "es": ("desarrollador",), "it": ("sviluppatore",), "pl": ("programista",),
+        "pt": ("desenvolvedor",), "ru": ("разработчик",), "uk": ("розробник",),
+        "tr": ("geliştirici",), "ja": ("開発者",), "zh": ("开发者",),
     },
     "software development": {
         "de": ("Softwareentwicklung",), "fr": ("développement logiciel",),
@@ -334,6 +353,10 @@ def localized_titles(title: str, lang: str, *, limit: int = 2) -> List[str]:
             level_terms = TITLE_TERMS["intern"].get(lang, ())
     if not level_terms and not translated:
         return []
+    # Keep the user's spelling of untranslated words (technical terms such
+    # as Python, SQL, AWS, React stay exactly as typed).
+    original = {w.lower(): w for w in re.findall(r"[\w+#.]+", title or "")}
+    role_local = " ".join(original.get(w.lower(), w) for w in role_local.split())
     out: List[str] = []
     for lvl in level_terms or ("",):
         q = f"{lvl} {role_local}".strip()
