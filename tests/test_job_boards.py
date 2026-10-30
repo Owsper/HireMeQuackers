@@ -20,7 +20,8 @@ def test_planner_emits_site_query_per_board_except_api_ones():
     board_qs = [s.query_string for s in plan if s.category == "jobboard"]
     for b in MAJOR_JOB_BOARDS:
         hits = [q for q in board_qs if q.startswith(f"site:{b.site} ")]
-        assert bool(hits) == (b.api_source is None), b.key
+        # API boards use their adapter; US-only ZipRecruiter is not queried for Berlin
+        assert bool(hits) == (b.api_source is None and b.region in ("global", "de")), b.key
     assert "site:stepstone.de Werkstudent Python Berlin" in board_qs
     # German location -> German boards ranked first
     ordered = [s for s in plan if s.category == "jobboard"]

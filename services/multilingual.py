@@ -12,46 +12,18 @@ import re
 from typing import Dict, Iterable, List, Optional, Sequence
 
 #: Languages the dictionaries below cover.
-SUPPORTED = ("en", "de", "fr", "nl", "es", "it", "pl", "pt", "ru")
-
-#: Location substring -> local language(s).  Lower-case.
-LOCATION_LANGUAGES: Dict[str, tuple[str, ...]] = {
-    # German-speaking
-    "germany": ("de",), "deutschland": ("de",), "berlin": ("de",), "munich": ("de",),
-    "münchen": ("de",), "hamburg": ("de",), "frankfurt": ("de",), "cologne": ("de",),
-    "köln": ("de",), "stuttgart": ("de",), "düsseldorf": ("de",), "dusseldorf": ("de",),
-    "leipzig": ("de",), "dresden": ("de",), "hannover": ("de",), "nürnberg": ("de",),
-    "nuremberg": ("de",), "bremen": ("de",), "bonn": ("de",), "potsdam": ("de",),
-    "karlsruhe": ("de",), "aachen": ("de",), "mannheim": ("de",), "heidelberg": ("de",),
-    "austria": ("de",), "österreich": ("de",), "vienna": ("de",), "wien": ("de",),
-    "graz": ("de",), "zurich": ("de",), "zürich": ("de",), "basel": ("de",), "bern": ("de",),
-    # multilingual countries
-    "switzerland": ("de", "fr"), "schweiz": ("de", "fr"), "suisse": ("fr", "de"),
-    "geneva": ("fr",), "genève": ("fr",), "lausanne": ("fr",),
-    "belgium": ("nl", "fr"), "belgië": ("nl", "fr"), "belgique": ("fr", "nl"),
-    "brussels": ("fr", "nl"), "antwerp": ("nl",), "ghent": ("nl",),
-    "luxembourg": ("fr", "de"),
-    # others
-    "france": ("fr",), "paris": ("fr",), "lyon": ("fr",), "toulouse": ("fr",),
-    "marseille": ("fr",), "nantes": ("fr",), "lille": ("fr",),
-    "netherlands": ("nl",), "nederland": ("nl",), "amsterdam": ("nl",),
-    "rotterdam": ("nl",), "utrecht": ("nl",), "eindhoven": ("nl",), "the hague": ("nl",),
-    "spain": ("es",), "españa": ("es",), "madrid": ("es",), "barcelona": ("es",),
-    "valencia": ("es",), "seville": ("es",),
-    "italy": ("it",), "italia": ("it",), "milan": ("it",), "milano": ("it",),
-    "rome": ("it",), "roma": ("it",), "turin": ("it",), "torino": ("it",),
-    "poland": ("pl",), "polska": ("pl",), "warsaw": ("pl",), "warszawa": ("pl",),
-    "krakow": ("pl",), "kraków": ("pl",), "wroclaw": ("pl",), "wrocław": ("pl",),
-    "portugal": ("pt",), "lisbon": ("pt",), "lisboa": ("pt",), "porto": ("pt",),
-    "brazil": ("pt",), "são paulo": ("pt",),
-}
+#: Languages that can be selected with `lang`.  Title translations exist for
+#: part of them; for the others only the user's own wording is searched.
+SUPPORTED = ("en", "de", "fr", "nl", "es", "it", "pl", "pt", "ru", "ja", "ar", "zh",
+             "ko", "tr", "sv", "da", "no", "fi", "cs", "hu", "ro", "el", "uk", "he",
+             "hi", "id", "th", "vi", "ms")
 
 #: Level words handled separately from the role part of a title.
 _LEVELS = ("working student", "intern", "apprentice", "graduate", "junior")
 
 #: Canonical English term -> local equivalents (first = preferred in queries).
 TITLE_TERMS: Dict[str, Dict[str, tuple[str, ...]]] = {
-    "intern": {
+    "intern": { "ja": ('インターン',), "ar": ('متدرب',), "zh": ('实习生',), "ko": ('인턴',), "tr": ('stajyer',),
         "de": ("Praktikum", "Praktikant"), "fr": ("stage", "stagiaire"),
         "nl": ("stage", "stagiair"), "es": ("prácticas", "becario"),
         "it": ("stage", "tirocinio"), "pl": ("staż", "praktyki"),
@@ -68,22 +40,22 @@ TITLE_TERMS: Dict[str, Dict[str, tuple[str, ...]]] = {
         "pl": ("absolwent",), "pt": ("recém-formado",),
     },
     # ---- non-IT professions (industry-agnostic search) ----
-    "nurse": {
+    "nurse": { "ja": ('看護師',), "ar": ('ممرض',), "zh": ('护士',), "ko": ('간호사',), "tr": ('hemşire',),
         "de": ("Pflegefachkraft", "Krankenpfleger"), "fr": ("infirmier",),
         "nl": ("verpleegkundige",), "es": ("enfermero",), "it": ("infermiere",),
         "pl": ("pielęgniarka",), "pt": ("enfermeiro",), "ru": ("медсестра",),
     },
-    "accountant": {
+    "accountant": { "ja": ('会計士', '経理'), "ar": ('محاسب',), "zh": ('会计',), "ko": ('회계사',), "tr": ('muhasebeci',),
         "de": ("Buchhalter",), "fr": ("comptable",), "nl": ("boekhouder",),
         "es": ("contable",), "it": ("contabile",), "pl": ("księgowy",),
         "pt": ("contador",), "ru": ("бухгалтер",),
     },
-    "warehouse worker": {
+    "warehouse worker": { "ja": ('倉庫作業員',), "ar": ('عامل مستودع',), "zh": ('仓库工人',), "tr": ('depo elemanı',),
         "de": ("Lagerhelfer", "Lagermitarbeiter"), "fr": ("préparateur de commandes",),
         "nl": ("magazijnmedewerker",), "es": ("mozo de almacén",), "it": ("magazziniere",),
         "pl": ("magazynier",), "pt": ("operador de armazém",), "ru": ("кладовщик",),
     },
-    "marketing assistant": {
+    "marketing assistant": { "ja": ('マーケティングアシスタント',), "ar": ('مساعد تسويق',),
         "de": ("Marketingassistent",), "fr": ("assistant marketing",),
         "nl": ("marketingassistent",), "es": ("asistente de marketing",),
         "it": ("assistente marketing",), "pl": ("asystent marketingu",),
@@ -94,7 +66,7 @@ TITLE_TERMS: Dict[str, Dict[str, tuple[str, ...]]] = {
         "es": ("diseñador gráfico",), "it": ("grafico",), "pt": ("designer gráfico",),
         "ru": ("графический дизайнер",),
     },
-    "sales assistant": {
+    "sales assistant": { "ja": ('販売スタッフ',), "ar": ('مساعد مبيعات',), "zh": ('销售助理',),
         "de": ("Verkäufer",), "fr": ("vendeur",), "nl": ("verkoopmedewerker",),
         "es": ("dependiente",), "it": ("commesso",), "pl": ("sprzedawca",),
         "pt": ("vendedor",), "ru": ("продавец",),
@@ -109,7 +81,7 @@ TITLE_TERMS: Dict[str, Dict[str, tuple[str, ...]]] = {
         "nl": ("administratief medewerker",), "es": ("auxiliar administrativo",),
         "it": ("assistente amministrativo",), "pt": ("assistente administrativo",),
     },
-    "teacher": {
+    "teacher": { "ja": ('教師',), "ar": ('معلم',), "zh": ('教师',),
         "de": ("Lehrer",), "fr": ("enseignant",), "nl": ("leraar",), "es": ("docente",),
         "it": ("insegnante",), "pl": ("nauczyciel",), "ru": ("учитель",),
     },
@@ -118,7 +90,7 @@ TITLE_TERMS: Dict[str, Dict[str, tuple[str, ...]]] = {
         "es": ("electricista",), "it": ("elettricista",), "pl": ("elektryk",),
         "pt": ("eletricista",), "ru": ("электрик",),
     },
-    "driver": {
+    "driver": { "ja": ('ドライバー',), "ar": ('سائق',), "zh": ('司机',),
         "de": ("Fahrer", "Berufskraftfahrer"), "fr": ("chauffeur",), "nl": ("chauffeur",),
         "es": ("conductor",), "it": ("autista",), "pl": ("kierowca",),
         "pt": ("motorista",), "ru": ("водитель",),
@@ -132,7 +104,7 @@ TITLE_TERMS: Dict[str, Dict[str, tuple[str, ...]]] = {
         "es": ("camarero",), "it": ("cameriere",), "pl": ("kelner",), "pt": ("garçom",),
         "ru": ("официант",),
     },
-    "software developer": {
+    "software developer": { "ja": ('ソフトウェア開発者',), "ar": ('مطور برمجيات',), "zh": ('软件开发',),
         "de": ("Softwareentwickler",), "fr": ("développeur logiciel",),
         "nl": ("softwareontwikkelaar",), "es": ("desarrollador de software",),
         "it": ("sviluppatore software",), "pl": ("programista",),
@@ -143,13 +115,13 @@ TITLE_TERMS: Dict[str, Dict[str, tuple[str, ...]]] = {
         "nl": ("softwareontwikkeling",), "es": ("desarrollo de software",),
         "it": ("sviluppo software",), "pt": ("desenvolvimento de software",),
     },
-    "software engineer": {
+    "software engineer": { "ja": ('ソフトウェアエンジニア',), "ar": ('مهندس برمجيات',), "zh": ('软件工程师',), "ko": ('소프트웨어 엔지니어',),
         "de": ("Softwareingenieur",), "fr": ("ingénieur logiciel",),
         "es": ("ingeniero de software",), "it": ("ingegnere software",),
         "pl": ("inżynier oprogramowania",), "pt": ("engenheiro de software",),
         "ru": ("инженер-программист",),
     },
-    "data analyst": {
+    "data analyst": { "ja": ('データアナリスト',), "ar": ('محلل بيانات',), "zh": ('数据分析师',),
         "de": ("Datenanalyst",), "fr": ("analyste de données",), "nl": ("data-analist",),
         "es": ("analista de datos",), "it": ("analista dati",), "pl": ("analityk danych",),
         "pt": ("analista de dados",), "ru": ("аналитик данных",),
@@ -164,6 +136,18 @@ TITLE_TERMS: Dict[str, Dict[str, tuple[str, ...]]] = {
         "de": ("Informatik",), "fr": ("informatique",), "nl": ("informatica",),
         "es": ("informática",), "it": ("informatica",), "pl": ("informatyka",),
         "pt": ("informática",),
+    },
+    # ---- roles added for worldwide search ----
+    "mechanical engineer": {
+        "de": ("Maschinenbauingenieur",), "fr": ("ingénieur mécanique",),
+        "es": ("ingeniero mecánico",), "it": ("ingegnere meccanico",),
+        "pt": ("engenheiro mecânico",), "ja": ("機械エンジニア",), "ar": ("مهندس ميكانيكي",),
+        "zh": ("机械工程师",), "ko": ("기계 엔지니어",), "tr": ("makine mühendisi",),
+    },
+    "marketing manager": {
+        "fr": ("responsable marketing",), "es": ("gerente de marketing",),
+        "it": ("responsabile marketing",), "ja": ("マーケティングマネージャー",),
+        "ar": ("مدير تسويق",), "zh": ("市场经理",),
     },
 }
 
@@ -222,6 +206,12 @@ LANGUAGE_NAMES: Dict[str, tuple[str, ...]] = {
     "pt": ("portuguese", "portugiesisch", "portugais", "portugees", "portugués",
            "portoghese", "portugalski", "português", "португальский"),
     "ru": ("russian", "russisch", "russe", "ruso", "russo", "rosyjski", "русский"),
+    "ja": ("japanese", "japanisch", "japonais", "japonés", "日本語"),
+    "ar": ("arabic", "arabisch", "arabe", "árabe", "العربية"),
+    "zh": ("chinese", "mandarin", "chinesisch", "chinois", "chino", "中文", "普通话"),
+    "ko": ("korean", "koreanisch", "coréen", "한국어"),
+    "tr": ("turkish", "türkisch", "turc", "türkçe"),
+    "hi": ("hindi",),
 }
 _NAME_TO_CODE = {n: code for code, names in LANGUAGE_NAMES.items() for n in names}
 _NAMES_ALT = "|".join(sorted(map(re.escape, _NAME_TO_CODE), key=len, reverse=True))
@@ -250,26 +240,34 @@ def _word_in(needle: str, text: str) -> bool:
 
 
 def languages_for_locations(locations: Iterable[str]) -> List[str]:
-    """Local language(s) of the configured locations, in order of appearance."""
+    """Local language(s) of the configured locations (any country), in order
+    of appearance — Tokyo -> ja, Dubai -> ar, en, Toronto -> en, fr."""
+    from services.geo import place_languages
+
     out: List[str] = []
     for loc in locations or []:
-        low = (loc or "").strip().lower()
-        for needle, langs in LOCATION_LANGUAGES.items():
-            if low and _word_in(needle, low):
-                out += [lang for lang in langs if lang not in out]
+        out += [lang for lang in place_languages(loc) if lang not in out]
     return out
 
 
 def search_languages(cfg) -> List[str]:
-    """Languages to search in: English (unless ``include_english`` is off),
-    the locations' local languages (when ``auto_detect_local_language``)
-    and the explicit ``search_languages``.  Unknown codes are dropped."""
+    """Languages to search in.
+
+    * the user's own ``search_languages`` (set with ``lang``) win: no local
+      language is forced on top of them;
+    * otherwise ("lang auto") the local languages of the requested places
+      (when ``auto_detect_local_language``);
+    * plus English unless ``include_english`` is off.
+    Unknown codes are dropped.
+    """
+    chosen = [(x or "").strip().lower() for x in getattr(cfg, "search_languages", None) or []]
     langs: List[str] = []
     if getattr(cfg, "include_english", True):
         langs.append("en")
-    if getattr(cfg, "auto_detect_local_language", True):
+    if chosen:
+        langs += chosen
+    elif getattr(cfg, "auto_detect_local_language", True):
         langs += languages_for_locations(getattr(cfg, "locations", None) or [])
-    langs += [(x or "").strip().lower() for x in getattr(cfg, "search_languages", None) or []]
     out: List[str] = []
     for lang in langs:
         if lang in SUPPORTED and lang not in out:

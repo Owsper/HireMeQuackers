@@ -87,6 +87,7 @@ def _resolve_feed_list(
 class RSSFeedSource(JobSource):
     name = "RSS Feeds"
     slug = "rss"
+    coverage_note = "depends on the feeds (defaults: remote + European feeds)"
     robots_check = True
     official_search_url: Optional[str] = None
 

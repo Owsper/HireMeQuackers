@@ -17,12 +17,15 @@ EN_DESC = ("We are looking for a motivated intern to join our data team in Berli
 
 def test_search_languages_from_locations_and_config():
     assert ml.search_languages(SearchConfig(locations=["Berlin"])) == ["en", "de"]
-    assert ml.search_languages(SearchConfig(locations=["Zurich, Switzerland"])) == ["en", "de", "fr"]
+    assert ml.search_languages(SearchConfig(locations=["Zurich, Switzerland"])) == ["en", "de", "fr", "it"]
+    assert ml.search_languages(SearchConfig(locations=["Tokyo"])) == ["en", "ja"]
+    assert ml.search_languages(SearchConfig(locations=["Dubai"])) == ["en", "ar"]
+    # the user's own /lang choice wins: no local language forced on top
     cfg = SearchConfig(locations=["Berlin"], search_languages=["fr", "xx"], include_english=False)
-    assert ml.search_languages(cfg) == ["de", "fr"]
+    assert ml.search_languages(cfg) == ["fr"]
     assert ml.search_languages(SearchConfig(locations=["Berlin"], auto_detect_local_language=False)) == ["en"]
     # "Bern" must not fire inside "Bernard"
-    assert ml.languages_for_locations(["Bernard Street, London"]) == []
+    assert "de" not in ml.languages_for_locations(["Bernard Street, London"])
 
 
 def test_canonicalize_and_localize_titles():

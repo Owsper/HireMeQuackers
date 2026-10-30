@@ -45,6 +45,7 @@ _SEARCH_URL = "https://hn.algolia.com/api/v1/search?tags=job&hitsPerPage=30"
 class HackerNewsJobsSource(JobSource):
     name = "HackerNews"
     slug = "hackernews"
+    coverage_note = "worldwide, mostly tech start-ups"
     official_search_url = _JOBS_URL
     robots_check = False  # API endpoint, no robot path required
 

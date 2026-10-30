@@ -187,6 +187,7 @@ class RecruiteeSource(ATSBoardSource):
 class PersonioSource(ATSBoardSource):
     name = "Personio"
     slug = "personio"
+    coverage_note = "worldwide (mostly European companies)"
     provider = "personio"
     official_search_url = "https://www.personio.com/"
 
@@ -276,6 +277,8 @@ class ArbeitnowSource(ATSBoardSource):
 
     name = "Arbeitnow"
     slug = "arbeitnow"
+    coverage_countries = ("austria", "belgium", "bulgaria", "croatia", "czech republic", "denmark", "estonia", "finland", "france", "germany", "greece", "hungary", "iceland", "ireland", "italy", "latvia", "lithuania", "luxembourg", "netherlands", "norway", "poland", "portugal", "romania", "slovakia", "slovenia", "spain", "sweden", "switzerland")
+    coverage_note = "Europe, mostly Germany"
     provider = "arbeitnow"
     official_search_url = "https://www.arbeitnow.com/"
     DEFAULT_BOARDS = ["all"]

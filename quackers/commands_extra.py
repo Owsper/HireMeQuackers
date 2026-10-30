@@ -47,7 +47,7 @@ GUIDE = [
         ("quackers config set description_languages=en", "only jobs written in these languages"),
     ]),
     ("2. Find jobs", [
-        ('quackers search Nurse in Berlin', "any profession, one-off (also: Any entry-level jobs in Berlin)"),
+        ('quackers search Nurse in Toronto', "any profession, any country (also: Remote jobs worldwide)"),
         ("quackers scan", "search all sources (ATS boards, job boards, feeds, web search)"),
         ("quackers jobs --new --sort score", "what's new, best matches first"),
         ("quackers job 12", "one job: details, match, description"),
@@ -436,12 +436,20 @@ def parse_search_request(text: str) -> Dict[str, Any]:
     t = " ".join((text or "").split()).strip(" .")
     remote = bool(re.search(r"(?<!\w)remote(?!\w)", t, re.I))
     t = re.sub(r"(?<!\w)(?:fully )?remote(?!\w)", " ", t, flags=re.I)
+    from services.geo import ANYWHERE_RE
+
+    anywhere = False
     locations: List[str] = []
     m = re.match(r"^(.*?)\s+(?:in|near|bei|at)\s+(.+)$", t, re.I)
     if m and m.group(2).strip():
         t = m.group(1)
         locations = [x.strip() for x in re.split(r"\s*(?:,|/|\bor\b|\band\b)\s*", m.group(2))
                      if x.strip()]
+    # "worldwide", "anywhere", "in any country": no geographic restriction
+    if any(ANYWHERE_RE.search(x) for x in locations) or ANYWHERE_RE.search(t):
+        anywhere = True
+        locations = [x for x in locations if not ANYWHERE_RE.search(x)]
+        t = ANYWHERE_RE.sub(" ", t)
     types: List[str] = []
     for rx, kinds in _LEVEL_TYPES:
         if rx.search(t):
@@ -457,6 +465,7 @@ def parse_search_request(text: str) -> Dict[str, Any]:
         "locations": locations,
         "employment_types": types,  # [] = any level
         "remote": remote,
+        "anywhere": anywhere,  # True = no location restriction at all
     }
 
 
@@ -467,12 +476,12 @@ def cmd_search(args) -> None:
     cli = _cli()
     raw = " ".join(args.request)
     req = parse_search_request(raw)
-    if not (req["title"] or req["employment_types"]
-            or re.search(r"(?<!\w)(?:any|all)(?!\w)", raw, re.I)):
+    if not (req["title"] or req["employment_types"] or req["remote"] or req["anywhere"]
+            or req["locations"] or re.search(r"(?<!\w)(?:any|all|jobs?)(?!\w)", raw, re.I)):
         raise cli.CliError('Say what to look for, e.g. quackers search "Accountant in London"')
     cfg = cli.load_config()
-    if not req["locations"] and not req["remote"] and not cfg.locations:
-        raise cli.CliError('Where? e.g. quackers search "Nurse in Berlin" (or add "remote")')
+    # No place given -> the saved location preferences (if any) apply;
+    # none saved -> no location restriction.  Any country works.
     titles = [req["title"]] if req["title"] else []
     workplace = ["include_remote"] if req["remote"] else []
     if not titles:
@@ -481,6 +490,9 @@ def cmd_search(args) -> None:
     cfg = cli.apply_scan_overrides(cfg, titles, req["locations"], workplace)
     if titles:
         cfg.include_keywords = titles  # not the saved config's (maybe IT) keywords
+    if req["anywhere"]:
+        cfg.locations, cfg.excluded_locations = [], []
+        cfg.worldwide_remote = bool(req["remote"])
     # The level the user typed decides the employment types; no level means
     # every type (a "Nurse" search must not be limited to internships).
     cfg.employment_types = ([EmploymentType(t) for t in req["employment_types"]]
@@ -496,10 +508,30 @@ def cmd_search(args) -> None:
               f"{' in ' + ', '.join(cfg.locations) if cfg.locations else ''}"
               f"{' (remote)' if req['remote'] else ''} · languages: "
               f"{', '.join(_search_langs(cfg))}")
+    for note in coverage_notes(cfg):
+        term.info(note)
     result = cli._run_scan(cfg, evaluate=not args.no_ai)
     cli._print_scan_result(result)
     if result.get("status") == "error":
         raise cli.CliError("Search finished with errors (see above).")
+
+
+def coverage_notes(cfg) -> List[str]:
+    """Honest notes about sources that do not cover the requested places.
+    Sources are still queried; this only sets expectations."""
+    from services.geo import countries_of
+    from sources.registry import enabled_sources
+
+    wanted = countries_of(cfg.locations or [])
+    if not wanted:
+        return []
+    notes = []
+    for src in enabled_sources(cfg):
+        cover = set(getattr(src, "coverage_countries", ()) or ())
+        if cover and not cover & set(wanted):
+            notes.append(f"  note: {src.name} covers {src.coverage_note} — few or no results "
+                         f"expected for {', '.join(w.title() for w in wanted)}.")
+    return notes
 
 
 def _search_langs(cfg) -> List[str]:
@@ -544,7 +576,8 @@ def register(sub) -> None:
     s.set_defaults(func=cmd_guide)
 
     s = sub.add_parser("search", help="search any profession: search Nurse in Berlin")
-    s.add_argument("request", nargs="+", help="e.g. Accountant in London / Any entry-level jobs in Berlin")
+    s.add_argument("request", nargs="+",
+                   help="e.g. Accountant in London / Mechanical Engineer in Tokyo / Jobs in any country")
     s.add_argument("--no-ai", action="store_true", help="skip AI scoring (deterministic only)")
     s.add_argument("--source", action="append", metavar="NAME", help="only this source (repeatable)")
     s.set_defaults(func=cmd_search)

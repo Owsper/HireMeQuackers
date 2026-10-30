@@ -55,6 +55,7 @@ def _maybe_salary(value) -> Optional[str]:
 class RemoteOkSource(JobSource):
     name = "RemoteOK"
     slug = "remoteok"
+    coverage_note = "remote jobs only, worldwide, mostly tech"
     official_search_url = _API_URL
     robots_check = False  # API endpoint, no robot path required
 

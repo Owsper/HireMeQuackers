@@ -133,6 +133,11 @@ class JobSource(abc.ABC):
     slug: str = "generic"
     official_search_url: Optional[str] = None
     robots_check: bool = False
+    #: Where this source actually has vacancies.  Empty = worldwide.  Used
+    #: only to *tell the user* about limits; sources are never skipped.
+    coverage_countries: tuple = ()
+    #: Short human description of the coverage (shown by `search`).
+    coverage_note: str = "worldwide"
 
     def __init__(self, *, client: Optional[httpx.Client] = None, allow_robots: bool = True):
         self.client = client

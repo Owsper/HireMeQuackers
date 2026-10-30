@@ -65,7 +65,11 @@ def test_plan_queries_respects_cfg_cap():
 # ------------------------------------------------------------------ #
 
 def test_german_variants_present_when_german_locations():
-    """Berlin → German variants should appear in the plan."""
+    """Berlin → German variants (from the generic localization layer, not a
+    hard-coded German list): Praktikum for internships, Werkstudent only
+    when working-student positions are requested."""
+    from config.search_config import EmploymentType
+
     cfg = SearchConfig(
         include_keywords=["Backend"],
         locations=["Berlin"],
@@ -75,6 +79,9 @@ def test_german_variants_present_when_german_locations():
     assert any("praktikum" in t for t in texts), (
         "expected a 'Praktikum' variant in the plan"
     )
+    assert not any("werkstudent" in t for t in texts)
+    cfg.employment_types = [EmploymentType.INTERNSHIP, EmploymentType.WORKING_STUDENT]
+    texts = [p.query_string.lower() for p in plan_queries(cfg, max_queries=100)]
     assert any("werkstudent" in t for t in texts), (
         "expected a 'Werkstudent' variant in the plan"
     )

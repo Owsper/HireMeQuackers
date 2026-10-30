@@ -283,9 +283,11 @@ def _extract_city_country(text: str) -> Tuple[List[str], List[str]]:
                 cities.append(m2.group(1).strip())
                 countries.append(m2.group(2).strip())
                 continue
-        # bare: if all-caps or well-known list, treat as country;
-        # otherwise a city.  We only split on these known markers:
-        if re.search(r"\b(Germany|USA|UK|France|Spain|Italy|Netherlands|Poland|Austria|Switzerland|remote)\b", p, re.I):
+        # bare: a country anywhere in the world (services.geo) or "remote"
+        # is a country-level request; anything else is taken as a city.
+        from services.geo import country as _geo_country
+
+        if re.search(r"\bremote\b", p, re.I) or _geo_country(p):
             countries.append(p)
         else:
             cities.append(p)

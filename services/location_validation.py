@@ -180,12 +180,32 @@ def _lookup_city(text: str) -> Optional[str]:
     for alias, canon in _CITY_ALIASES:
         if alias == key:
             return canon
-    return None
+    from services.geo import is_city
+
+    return key if is_city(key) else None
 
 
 def _lookup_country(text: str) -> Optional[str]:
     key = text.strip().lower()
-    return _COUNTRY_ALIASES.get(key)
+    from services.geo import country
+
+    if key in _COUNTRY_ALIASES:
+        return _COUNTRY_ALIASES[key]
+    canon = country(key)
+    # A full name stays as written ("Germany"); only aliases/codes map.
+    return canon if canon and canon != key else None
+
+
+def _fix_region(city: Optional[str], country: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """"Toronto, ON" / "New York, NY": the second part is a state or
+    province, not a country — use the city's country, keep the region."""
+    from services.geo import city_country, country as geo_country
+
+    if city and country and not geo_country(country) and city_country(city):
+        return city_country(city), country
+    if city and not country and city_country(city):
+        return city_country(city), None
+    return country, None
 
 
 def parse_location(raw: str) -> ParsedLocation:
@@ -251,6 +271,9 @@ def parse_location(raw: str) -> ParsedLocation:
         elif label == "cc_only":
             country = _lookup_country(m.group(1)) or m.group(1).upper()
 
+        country, state = _fix_region(city, country)
+        region = region or state
+
         # If any of city / country was resolved via an alias or a
         # well-known code, bump confidence to "explicit".
         source = "source_explicit"
@@ -289,6 +312,18 @@ def parse_location(raw: str) -> ParsedLocation:
                     source="source_explicit", confidence=_CONFIDENCE_EXPLICIT,
                     notes=["single-token city"],
                 )
+    # Known city / country anywhere in the world ("Sydney NSW", "Dubai",
+    # "Tokyo-to", "Japan") from the offline geo tables.
+    from services.geo import resolve
+
+    g_city, g_country = resolve(original)
+    if g_city or g_country:
+        return ParsedLocation(
+            city=g_city, country=g_country, original=original,
+            remote=remote, arrangement=arrangement,
+            source="source_explicit", confidence=0.9,
+            notes=["geo table"],
+        )
     # Truly not recognisable: city + country both None, retained
     # original text, low confidence so the UI can show an "unverified"
     # badge.
@@ -377,7 +412,11 @@ def location_verdict(
     #    including the job's.
     job_cities = [c.strip().lower() for c in (parsed_job_loc.city or "").split() if c]
     if job_cities and requested_cities:
-        job_city_hit = any(_city_equal(jc, rc) for jc in job_cities for rc in requested_cities)
+        # Compare the whole city name too: multi-word cities ("New York",
+        # "São Paulo", "Frankfurt am Main") never matched word by word.
+        full_city = (parsed_job_loc.city or "").strip().lower()
+        job_city_hit = any(_city_equal(full_city, rc) for rc in requested_cities) or any(
+            _city_equal(jc, rc) for jc in job_cities for rc in requested_cities)
         # Job country might also satisfy a "country-only" intent.
         if job_city_hit or (not job_cities and parsed_job_loc.country):
             pass  # fall through
@@ -420,8 +459,10 @@ def _matches_country(job_country: str, request_country: str) -> bool:
     if j == r:
         return True
     # "united states" vs "usa" / "us"
-    j_canon = _COUNTRY_ALIASES.get(j, j)
-    r_canon = _COUNTRY_ALIASES.get(r, r)
+    from services.geo import country
+
+    j_canon = _COUNTRY_ALIASES.get(j) or country(j) or j
+    r_canon = _COUNTRY_ALIASES.get(r) or country(r) or r
     return j_canon == r_canon
 
 

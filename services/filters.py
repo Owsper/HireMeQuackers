@@ -161,8 +161,11 @@ def _check_one(
     # with intent, because it's a *tight substring* rule the user
     # authored explicitly.
     if cfg.locations:
+        from services.geo import same_place
+
         if not any(
             (l.lower().strip() in _lo) or (l.lower().strip() in _tl) or (l.lower().strip() in _dl)
+            or same_place(job.location or "", l)
             for l in cfg.locations if l and l.strip()
         ):
             return None, "location not in requested places"

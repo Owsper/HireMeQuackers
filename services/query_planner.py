@@ -6,8 +6,8 @@ planner returns a sorted :class:`QuerySpec` list.  Queries are
 grouped into *families*:
 
 * ``role``        — the user's own titles / keywords / CV target roles in any
-                  industry ("Nurse", "Marketing Assistant intern",
-                  "Praktikum Marketing" when German locations present)
+                  industry and country ("Nurse", "Marketing Assistant intern");
+                  local-language variants come from ``services.multilingual``
 * ``skill``       — skill × role / skill × position ("intern python")
 * ``location``    — location + remote / hybrid variants
 * ``ats``         — ATS/career-page search ("site:jobs.ashbyhq.com intern")
@@ -41,18 +41,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-# Recognised German locations (case-insensitive substring match).
-#: Only these fire the German language variants — so we don't emit
-#: "Praktikum" if the user is searching for "London".
-_GERMAN_LOCATIONS: tuple[str, ...] = (
-    "germany", "deutschland",
-    "berlin", "potsdam", "münchen", "munich",
-    "hamburg", "cologne", "cöln", "frankfurt",
-    "üsseldorf", "düsseldorf", "stuttgart", "dresden",
-    "leipzig", "hannover", "nürnberg", "nuremberg",
-    "aachen", "bochum", "bremen", "bonn",
-)
-
 @dataclass
 class QuerySpec:
     """One concrete query to run through a search provider."""
@@ -82,15 +70,6 @@ def _dedupe(specs: List[QuerySpec]) -> List[QuerySpec]:
         seen.add(key)
         out.append(spec)
     return out
-
-
-def _has_german_location(locations: List[str]) -> bool:
-    lowered = [_lower(x) for x in locations if _lower(x)]
-    for loc in lowered:
-        for needle in _GERMAN_LOCATIONS:
-            if needle in loc:
-                return True
-    return False
 
 
 #: EmploymentType value -> level word appended to role queries.
@@ -177,7 +156,6 @@ def plan_queries(
     from services.multilingual import localized_titles, query_language, search_languages
 
     specs: List[QuerySpec] = []
-    is_german = _has_german_location(cfg.locations)
     languages = search_languages(cfg)
 
     # Industry-agnostic: every query is built from what the user asked for
@@ -235,16 +213,9 @@ def plan_queries(
         add(role, "role", top, reason="requested title")
         for j, lv in enumerate(levels[:2]):
             add(with_level(role, lv), "role", top - 1 - j, reason=f"{role} ({lv})")
-        if is_german and entry_level and not _has_level_word(role):
-            add(f"Praktikum {role}", "role", 89, reason=f"German internship {role}")
-            add(f"Werkstudent {role}", "role", 88, reason=f"German working student {role}")
     if not roles:
         for i, g in enumerate(generic[:3]):
             add(g, "role", 90 - i, reason="no title given — level only")
-        if is_german and entry_level:
-            add("Praktikum", "role", 88, reason="German internship (any field)")
-            add("Werkstudent", "role", 87, reason="German working student (any field)")
-            add("Berufseinsteiger", "role", 86, reason="German entry level (any field)")
 
     # ---------------------------------------------------------------- #
     # Family 2: skill / qualification x level (priority 75-70)
@@ -253,8 +224,6 @@ def plan_queries(
         add(f"{s} {level}" if level else f"{s} jobs", "skill", 75, reason=f"skill {s}")
         if first_role:
             add(f"{first_role} {s}", "skill", 70, reason=f"{first_role} + skill {s}")
-        if is_german and entry_level:
-            add(f"Werkstudent {s}", "skill", 72, reason=f"German skill {s}")
 
     # ---------------------------------------------------------------- #
     # Family 3: location + remote (priority 68-60)
@@ -263,8 +232,6 @@ def plan_queries(
         add(f"{with_level(primary, level)} {loc}", "location", 65)
         for role in roles[1:3]:
             add(f"{role} {loc}", "location", 61)
-        if is_german and entry_level:
-            add(f"Werkstudent {first_role} {loc}", "location", 62)
     if cfg.worldwide_remote or cfg.include_remote:
         add(f"remote {with_level(primary, level)}", "location", 68, reason="remote")
         add(f"remote {primary} worldwide", "location", 60)
@@ -282,8 +249,6 @@ def plan_queries(
     ]
     for site, label in ats_roots:
         add(f"site:{site} {with_level(primary, level)}", "ats", 55, reason=f"{label} ATS search")
-        if is_german and entry_level:
-            add(f"site:{site} Praktikum {first_role}", "ats", 55, reason=f"{label} ATS search (DE)")
 
     # ---------------------------------------------------------------- #
     # Family 4b: major job boards (priority 60-58) — publicly indexed
@@ -307,7 +272,9 @@ def plan_queries(
     # language other than English — dictionary translations only, so an
     # unknown title produces no query instead of a bad guess.
     # ---------------------------------------------------------------- #
-    base_titles = [with_level(r, level) for r in roles[:3]] or generic[:1]
+    base_titles = [with_level(r, lv) for r in roles[:3] for lv in (levels[:2] or [""])]
+    base_titles = list(dict.fromkeys(base_titles or generic[:3]))
+    first_local = True
     for lang in languages:
         if lang == "en":
             continue
@@ -318,14 +285,17 @@ def plan_queries(
                 for loc in cfg.locations[:2]:
                     add(f"{local} {loc}", "location", 63 - i,
                         reason=f"{lang} title + location", meta={"lang": lang})
+                if first_local and i == 0:
+                    for site, label in ats_roots:
+                        add(f"site:{site} {local}", "ats", 55,
+                            reason=f"{label} ATS search ({lang})", meta={"lang": lang})
+        first_local = False
 
     # ---------------------------------------------------------------- #
     # Family 5: informal / community wording (priority 45)
     # ---------------------------------------------------------------- #
     for p in (f"hiring {primary}", f"we are hiring {primary}", f"looking for {primary}"):
         add(p, "informal", 45)
-    if is_german:
-        add(f"wir suchen {primary}", "informal", 45)
 
     # ---------------------------------------------------------------- #
     # Family 6: company career pages (priority 55)
@@ -341,15 +311,11 @@ def plan_queries(
     if entry_level:
         add(f"graduate {first_role or 'jobs'}", "seniority", 50)
         add(f"entry level {first_role or 'jobs'}", "seniority", 48)
-        if is_german:
-            add(f"Berufseinsteiger {first_role}", "seniority", 50)
 
     # ---------------------------------------------------------------- #
     # Family 8: recent (priority 30) — provider-dependent recency.
     # ---------------------------------------------------------------- #
     add(f"{with_level(primary, level)} posted last week", "recent", 30)
-    if is_german and entry_level:
-        add(f"Praktikum {first_role} neu", "recent", 30)
 
     # ---------------------------------------------------------------- #
     # Sort by priority desc; truncate to max_queries.

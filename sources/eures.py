@@ -38,6 +38,8 @@ _LIST_KEYS = ("hits", "jobs", "results", "offres", "vacancies")
 class EuresSource(JobSource):
     name = "EURES"
     slug = "eures"
+    coverage_countries = ("austria", "belgium", "bulgaria", "croatia", "czech republic", "denmark", "estonia", "finland", "france", "germany", "greece", "hungary", "iceland", "ireland", "italy", "latvia", "lithuania", "luxembourg", "netherlands", "norway", "poland", "portugal", "romania", "slovakia", "slovenia", "spain", "sweden", "switzerland")
+    coverage_note = "EU / EEA only"
     official_search_url = None  # endpoint is user-configured
     robots_check = False  # API endpoint, no robot path required
 

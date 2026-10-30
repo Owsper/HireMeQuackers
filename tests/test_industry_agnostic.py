@@ -131,7 +131,7 @@ def test_planner_has_no_it_leak_for_non_it_titles(title, locations):
     qs = [s.query_string.lower() for s in plan]
     assert qs and all(not any(w in q for w in IT_WORDS) for q in qs), qs
     for q, s in zip(qs, plan):
-        if s.category in ("jobboard", "ats") or (s.category == "role" and s.meta.get("lang") == "en"):
+        if s.meta.get("lang") == "en" and s.category in ("jobboard", "ats", "role"):
             assert title.lower() in q, q
 
 

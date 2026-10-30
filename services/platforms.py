@@ -84,14 +84,37 @@ def platform_of(url: Optional[str]) -> str:
     return "Company site" if _host(url) else "Unknown"
 
 
-def boards_for_scan(locations, *, include_api_boards: bool = False) -> list[JobBoard]:
-    """Boards to query, local-region boards first; API-backed boards skipped."""
-    from services.query_planner import _has_german_location
+#: Countries each regional board actually covers.
+REGION_COUNTRIES = {
+    "de": ("germany", "austria", "switzerland"),
+    "us": ("united states",),
+}
 
-    german = _has_german_location(list(locations or []))
+
+def boards_for_scan(locations, *, include_api_boards: bool = False) -> list[JobBoard]:
+    """Boards to query for the requested places (any country).
+
+    Global boards are always used.  A regional board (StepStone / Jobware:
+    DACH, ZipRecruiter: US) is used — and ranked first — only when a
+    requested place lies in its region, or when no place could be
+    recognised (worldwide / unknown places: nothing is ruled out).
+    API-backed boards are skipped (their adapter covers them).
+    """
+    from services.geo import countries_of
+
+    wanted = set(countries_of(list(locations or [])))
     boards = [b for b in MAJOR_JOB_BOARDS if include_api_boards or not b.api_source]
-    rank = {"de": 0 if german else 2, "global": 1, "us": 3}
-    return sorted(boards, key=lambda b: rank.get(b.region, 1))
+
+    def covers(b: JobBoard) -> bool:
+        return b.region == "global" or not wanted or bool(
+            wanted & set(REGION_COUNTRIES.get(b.region, ())))
+
+    def rank(b: JobBoard) -> int:
+        if b.region == "global":
+            return 1
+        return 0 if wanted & set(REGION_COUNTRIES.get(b.region, ())) else 2
+
+    return sorted((b for b in boards if covers(b)), key=rank)
 
 
 # --------------------------------------------------------------------------- #
