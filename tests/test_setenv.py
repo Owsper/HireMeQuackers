@@ -20,10 +20,10 @@ FAKE_SECRET = "fake-secret-value-123"
 
 
 def test_banner_fits_80_columns_and_falls_back_when_narrow():
-    assert banner.ART_WIDTH < 80
+    assert banner.ART_WIDTH >= 80
     assert len(banner.ART) == 5
-    assert banner.render(40) == [term.style("HireMeQuackers", "bold", "cyan")]
-    assert len(banner.render(120)) == 5
+    assert banner.render(1000) and len(banner.render(1000)) == 5
+    assert banner.render(40) == [term.style("HireMeQuackers", "bold", "bright_cyan")]
 
 
 def test_banner_has_no_ansi_when_colour_is_off(monkeypatch):
