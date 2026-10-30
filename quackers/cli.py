@@ -1556,11 +1556,14 @@ def cmd_env(args) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     statuses = list(store.APP_STATUSES)
+    # "did you mean …?" for typos exists only on Python 3.14+; the project
+    # supports 3.10+, so pass it only where argparse knows it.
+    extra = {"suggest_on_error": True} if sys.version_info >= (3, 14) else {}
     p = argparse.ArgumentParser(
         prog="quackers",
         description="HireMeQuackers — local-first AI job-hunting agent.",
         epilog="New here? Run `quackers guide`.",
-        suggest_on_error=True,
+        **extra,
     )
     sub = p.add_subparsers(dest="command", metavar="<command>")
     sub.required = True

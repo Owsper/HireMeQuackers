@@ -228,6 +228,22 @@ def test_guide_and_typo_suggestion(capsys):
     assert "scan" in capsys.readouterr().err
 
 
+def test_build_parser_works_on_python_before_3_14(monkeypatch):
+    """argparse < 3.14 has no `suggest_on_error` (crashed the shell on 3.13)."""
+    import argparse
+
+    class OldArgumentParser(argparse.ArgumentParser):
+        def __init__(self, *args, suggest_on_error=None, **kwargs):
+            if suggest_on_error is not None:
+                raise TypeError("unexpected keyword argument 'suggest_on_error'")
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(cli.argparse, "ArgumentParser", OldArgumentParser)
+    monkeypatch.setattr(cli.sys, "version_info", (3, 13, 0))
+    args = cli.build_parser().parse_args(["guide"])
+    assert args.func is not None
+
+
 # ---------------------------------------------------------------- migration
 
 
