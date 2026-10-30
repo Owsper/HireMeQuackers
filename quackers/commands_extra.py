@@ -38,36 +38,51 @@ def _run(argv: List[str]) -> None:
 # ---------------------------------------------------------------------------
 
 GUIDE = [
-    ("1. Set up (once)", [
-        ("quackers env", "API keys / search provider (all optional; Gemini too)"),
-        ("quackers cv my_cv.pdf", "load your CV — preview + confirmation before saving"),
-        ("quackers cv-template", "PDF unreadable? fill a JSON CV in your editor instead"),
-        ('quackers config set locations="Berlin, Munich" include_remote=true', "where to search"),
-        ("quackers lang de fr", "also search job titles in German + French (/lang)"),
-        ("quackers config set description_languages=en", "only jobs written in these languages"),
+    ("1. Setup & configuration", [
+        ("/env", "API keys / search provider (all optional; Gemini too)"),
+        ("/config show", "where to search and other current settings"),
+        ('/config set locations="Berlin, Munich" include_remote=true', "aim the search"),
+        ("/config set description_languages=en", "only jobs written in these languages"),
+        ("/lang de fr", "also search job titles in German + French"),
     ]),
-    ("2. Find jobs", [
-        ('quackers search Nurse in Toronto', "any profession, any country (also: Remote jobs worldwide)"),
-        ("quackers scan", "search all sources (ATS boards, job boards, feeds, web search)"),
-        ("quackers jobs --new --sort score", "what's new, best matches first"),
-        ("quackers job 12", "one job: details, match, description"),
-        ("quackers open 12", "open the original posting"),
-        ("quackers platforms", "which platforms the last scan found jobs on"),
+    ("2. Create or view CV", [
+        ("/cv", "show the active CV / profile"),
+        ("/cv my_cv.pdf", "load your CV (PDF / DOCX / JSON) — preview + confirm first"),
+        ("/cv-template", "PDF unreadable? fill a JSON CV in your editor instead"),
+        ("/profile list", "all profiles (show / edit / activate: /profile -h)"),
     ]),
-    ("3. Apply & track", [
-        ("quackers docs cover-letter 12", "draft a cover letter"),
-        ("quackers app set 12 applied", "track an application"),
-        ("quackers app followups", "what needs a follow-up"),
+    ("3. Find jobs", [
+        ("/search Nurse in Toronto", "any profession, any country (also: Remote jobs worldwide)"),
+        ("/scan", "search all sources (ATS boards, job boards, feeds, web search)"),
+        ("/jobs --new --sort score", "what's new, best matches first"),
+        ("/platforms", "which platforms the last scan found jobs on"),
     ]),
-    ("4. More sources", [
-        ("quackers boards discover https://acme.com/careers", "find a company's ATS board"),
-        ("quackers boards add ashby:linear", "add an ATS board by hand"),
-        ("quackers sources list", "health of every source"),
+    ("4. View job details", [
+        ("/job 12", "one job: details, match, description"),
+        ("/open 12", "open the original posting in the browser"),
+        ("/show job 12", "quick view of job 12 (/show without args lists views)"),
+        ("/history show 3", "one scan with its config and failures"),
     ]),
-    ("Look things up", [
-        ("quackers show cv | config | scan | boards | jobs", "quick views"),
-        ("quackers export jobs.csv --min-score 60", "save jobs to CSV / JSON"),
-        ("quackers <command> -h", "all options of a command"),
+    ("5. Apply & track applications", [
+        ("/app set 12 APPLIED", "track an application (statuses: DISCOVERED … INTERVIEW, REJECTED, WITHDRAWN)"),
+        ("/app followups", "what needs a follow-up"),
+        ("/app list", "all tracked applications"),
+        ("/docs cover-letter 12", "draft a cover letter"),
+    ]),
+    ("6. Manage job sources", [
+        ("/sources list", "health of every source"),
+        ("/sources enable hackernews", "enable / disable a source by name"),
+        ("/boards add ashby:linear", "add / remove / list / discover ATS boards"),
+    ]),
+    ("7. Export jobs", [
+        ("/export jobs.csv --min-score 60", "save jobs to CSV / JSON"),
+        ("/docs export 5 brief.docx", "copy a generated document to a file"),
+    ]),
+    ("8. Help & command reference", [
+        ("/help", "every command with a one-line description"),
+        ("/job -h", "all options of any command (add -h)"),
+        ("/clear", "clear screen + new AI conversation"),
+        ("/exit", "leave quackers"),
     ]),
 ]
 
@@ -77,8 +92,8 @@ def cmd_guide(args) -> None:
         term.heading(title)
         term.table([{"command": c, "what": w} for c, w in rows], ["command", "what"],
                    max_widths={"command": 62, "what": 60})
-    term.info("\nTip: run `quackers` with no arguments for the interactive shell "
-              "(Tab completes commands).")
+    term.info("\nTip: commands run without any prefix — just type them at the prompt. "
+              "Tab completes commands; /help lists them all.")
 
 
 # ---------------------------------------------------------------------------
