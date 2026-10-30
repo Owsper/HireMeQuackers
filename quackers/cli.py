@@ -1149,7 +1149,7 @@ def cmd_cv(args) -> None:
             cv_file=str(path), edit=edit, inactive=False, yes=yes))
     else:
         raise CliError(f"Unsupported CV type {suffix or '(none)'}: use .pdf, .docx or .json.")
-    term.info("Next: `quackers scan`")
+    term.info("Next: /scan")
 
 
 def cmd_profile_activate(args) -> None:
