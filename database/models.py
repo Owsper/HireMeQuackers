@@ -87,6 +87,15 @@ class Job(Base):
     location_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     match_explanation: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # --- multilingual: language the posting is written in + languages the
+    # applicant must speak (ISO 639-1; NULL = unknown, never guessed) ---
+    description_language: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    required_languages_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    @property
+    def required_languages(self) -> List[str]:
+        return _from_json(self.required_languages_json) or []
+
     @property
     def required_skills(self) -> List[str]:
         return _from_json(self.required_skills_json) or []
@@ -184,6 +193,8 @@ class ScanRecord(Base):
     status: Mapped[str] = mapped_column(String(40), default="running", index=True)
     search_config_json: Mapped[Optional[str]] = mapped_column(Text)
     trigger: Mapped[str] = mapped_column(String(40), default="user")
+    # {platform: {found, unique, cross_source_duplicates}} for this scan
+    platform_stats_json: Mapped[Optional[str]] = mapped_column(Text)
 
 
 class SourceHealthRecord(Base):

@@ -51,6 +51,12 @@ class RawListing:
     # the description was extracted from the listing page (vs. only
     # the search snippet), ``False`` when only the snippet is available.
     detail_extraction_succeeded: bool = False
+    # ATS-native job id (Ashby id, SmartRecruiters posting id, ...).
+    external_job_id: Optional[str] = None
+    # ISO 639-1 language the vacancy is *written* in (None = detect later).
+    description_language: Optional[str] = None
+    # Languages the *applicant* must speak, ISO codes (None = extract later).
+    required_languages: Optional[List[str]] = None
 
     def dedup_key(self) -> str:
         """Best available de-duplication key.

@@ -95,6 +95,9 @@ def get_or_create_job_by_fingerprint(
     for k, v in fields.items():
         if k in ("required_skills", "preferred_skills") and isinstance(v, (list, set)):
             normalized[k + "_json"] = _j(list(v))
+        elif k == "required_languages":
+            # None = unknown (no text yet); [] = text checked, nothing required.
+            normalized[k + "_json"] = None if v is None else _j(sorted(v))
         else:
             normalized[k] = v
     normalized.setdefault("content_fingerprint", fingerprint)
@@ -180,6 +183,13 @@ def update_job_from_enrichment(
     _fill("workplace_arrangement", detail.workplace_arrangement)
     _fill("application_url", detail.application_url)
     _fill("education_requirements", detail.education_requirements)
+    if detail.description_text:
+        from services.multilingual import detect_language, extract_required_languages
+
+        _fill("description_language", detect_language(f"{job.title}\n{detail.description_text}"))
+        if job.required_languages_json is None:
+            job.required_languages_json = _j(extract_required_languages(detail.description_text))
+            changes = True
     if detail.json_ld_present or detail.extraction_confidence > 0:
         if job.extraction_confidence is None or job.extraction_confidence < detail.extraction_confidence:
             job.extraction_confidence = float(detail.extraction_confidence)
@@ -269,6 +279,8 @@ def upsert_candidate_profile(
         active=active,
         updated_at=utcnow(),
     )
+    if active:  # exactly one active profile; older ones are kept, just inactive
+        session.query(CandidateProfile).filter_by(active=True).update({"active": False})
     session.add(profile)
     session.commit()
     session.refresh(profile)
@@ -283,7 +295,7 @@ def get_active_candidate_profile(session: Session) -> Optional[CandidateProfile]
     return (
         session.query(CandidateProfile)
         .filter_by(active=True)
-        .order_by(CandidateProfile.profile_version.desc())
+        .order_by(CandidateProfile.updated_at.desc(), CandidateProfile.id.desc())
         .first()
     )
 
@@ -395,8 +407,11 @@ def finish_scan(
     new_jobs: int = 0,
     duplicates: int = 0,
     failures: Optional[List[Dict[str, Any]]] = None,
+    platform_stats: Optional[Dict[str, Any]] = None,
 ) -> ScanRecord:
     scan.status = status
+    if platform_stats is not None:
+        scan.platform_stats_json = _j(platform_stats)
     scan.completed_at = utcnow()
     scan.total_discovered = total_discovered
     scan.new_jobs = new_jobs

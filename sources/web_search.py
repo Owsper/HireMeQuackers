@@ -24,6 +24,7 @@ from typing import List, Optional
 import httpx
 
 from config.search_config import SearchConfig, classify_employment_type
+from services.platforms import is_aggregator, looks_like_results_page, split_board_title
 from services.query_planner import QuerySpec, plan_queries
 from services.sanitization import strip_html
 
@@ -238,12 +239,18 @@ class WebSearchSource(JobSource):
                 title = strip_html(res.title or "")[:200]
                 if not title:
                     continue
+                if is_aggregator(res.url) and looks_like_results_page(title):
+                    # A board's search/overview page, not one vacancy.
+                    continue
+                # Job-board titles carry "Title - Company - City | Board";
+                # other pages keep company unknown until enrichment.
+                title, company, location = split_board_title(title, res.url)
                 parsed += 1
                 all_listings.append(RawListing(
                     source=self.name,
                     title=title,
-                    company="",  # unknown at this stage
-                    location=None,
+                    company=company,
+                    location=location,
                     description_text=(res.snippet or None),
                     original_url=res.url,
                     canonical_url=res.final_url or res.url,

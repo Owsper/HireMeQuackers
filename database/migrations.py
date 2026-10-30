@@ -29,7 +29,13 @@ def upgrade(engine: Engine) -> None:
             "title_relevance": "VARCHAR(20)",
             "location_status": "VARCHAR(20)",
             "match_explanation": "TEXT",
+            "description_language": "VARCHAR(10)",
+            "required_languages_json": "TEXT",
         }
+        if (_column_exists(engine, "scan_records", "id")
+                and not _column_exists(engine, "scan_records", "platform_stats_json")):
+            conn.execute(text("ALTER TABLE scan_records ADD COLUMN platform_stats_json TEXT"))
+            log.info("Migrated: scan_records.platform_stats_json added")
         for col, coltype in job_cols.items():
             if not _column_exists(engine, "jobs", col):
                 conn.execute(text(f"ALTER TABLE jobs ADD COLUMN {col} {coltype}"))

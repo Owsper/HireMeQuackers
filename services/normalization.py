@@ -57,6 +57,7 @@ def raw_to_job(raw: RawListing, existing: Optional[Job] = None) -> dict:
     desc = strip_html(desc_raw) if "<" in desc_raw else desc
 
     emp = raw.employment_type or classify_employment_type(title)
+    lang, required_langs = job_languages(raw, title, desc)
     workplace = (raw.workplace_arrangement or "unknown").strip().lower()
 
     return dict(
@@ -79,7 +80,26 @@ def raw_to_job(raw: RawListing, existing: Optional[Job] = None) -> dict:
         source=raw.source,
         # published_at from raw (ISO string / int epoch / None)
         published_at=_coerce_date(raw.published_at),
+        description_language=lang,
+        required_languages=required_langs,
     )
+
+
+def job_languages(raw: RawListing, title: str, desc: str) -> tuple:
+    """(description_language, required_languages) — values supplied by the
+    source win; otherwise detected/extracted from the text, ``None`` / ``[]``
+    when the evidence is too weak."""
+    from services.multilingual import detect_language, extract_required_languages
+
+    lang = raw.description_language or detect_language(f"{title}\n{desc}")
+    text = " ".join(x for x in (desc, raw.language_requirements or "") if x)
+    if raw.required_languages is not None:
+        required = sorted({x.strip().lower() for x in raw.required_languages if x and x.strip()})
+    elif text.strip():
+        required = extract_required_languages(text)
+    else:
+        required = None  # nothing to read yet; enrichment may fill it later
+    return lang, required
 
 
 def _coerce_date(value) -> Optional[object]:

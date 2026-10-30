@@ -10,6 +10,11 @@ grouped into *families*:
 * ``skill``       — skill × role / skill × position ("intern python")
 * ``location``    — location + remote / hybrid variants
 * ``ats``         — ATS/career-page search ("site:jobs.ashbyhq.com intern")
+* ``jobboard``    — site-specific major job-board search
+                  ("site:stepstone.de Werkstudent Python Berlin"); these
+                  get reserved slots so the query cap cannot crowd them out
+* (localized)    — role titles translated into every search language
+                  (``services.multilingual``); tagged ``meta["lang"]``
 * ``informal``    — community / forum wording ("we're hiring intern")
 * ``company``     — named-company career pages ("jobs at acme")
 * ``seniority``   — graduate / entry-level / working student variants
@@ -120,8 +125,11 @@ def plan_queries(
         Number of provider pages to follow per query.  Ignored if
         a caller passes ``QuerySpec.max_pages`` explicitly.
     """
+    from services.multilingual import localized_titles, query_language, search_languages
+
     specs: List[QuerySpec] = []
     is_german = _has_german_location(cfg.locations)
+    languages = search_languages(cfg)
 
     # Collect skill/keyword candidates from cfg + profile.
     skills: list[str] = list(cfg.required_skills or [])
@@ -144,13 +152,15 @@ def plan_queries(
         q = (query or "").strip()
         if not q:
             return
+        meta = dict(meta or {})
+        meta.setdefault("lang", query_language(q))
         specs.append(QuerySpec(
             query_string=q,
             category=category,
             priority=priority,
             max_pages=max_pages,
             reason=reason,
-            meta=meta or {},
+            meta=meta,
         ))
 
     # ---------------------------------------------------------------- #
@@ -215,6 +225,45 @@ def plan_queries(
             add(f"site:{site} Praktikum", "ats", 55, reason=f"{label} ATS search (DE)")
 
     # ---------------------------------------------------------------- #
+    # Family 4b: major job boards (priority 60-58) — publicly indexed
+    # listings only; boards with an official API (Arbeitnow) are
+    # covered by their adapter and skipped here.
+    # ---------------------------------------------------------------- #
+    from services.platforms import boards_for_scan
+
+    board_role = (getattr(cfg, "primary_title", "") or "").strip() or (
+        f"{kws[0]} intern" if kws else base_role
+    )
+    board_loc = cfg.locations[0] if cfg.locations else ""
+    for i, board in enumerate(boards_for_scan(cfg.locations)):
+        add(
+            f"site:{board.site} {board_role} {board_loc}".strip(),
+            "jobboard", 60 - min(i, 2),
+            reason=f"{board.label} indexed listings",
+            meta={"platform": board.label},
+        )
+
+    # ---------------------------------------------------------------- #
+    # Family 4c: localized role titles (priority 88-62) for every search
+    # language other than English — dictionary translations only, so an
+    # unknown title produces no query instead of a bad guess.
+    # ---------------------------------------------------------------- #
+    base_titles = [t for t in [getattr(cfg, "primary_title", "")]
+                   + list(getattr(cfg, "title_synonyms", []) or [])[:2] if (t or "").strip()]
+    if not base_titles:
+        base_titles = [f"{k} intern" for k in kws[:3]] or ["software developer intern"]
+    for lang in languages:
+        if lang == "en":
+            continue
+        for title in base_titles:
+            for i, local in enumerate(localized_titles(title, lang)):
+                add(local, "role", 88 - i, reason=f"{lang} title for {title!r}",
+                    meta={"lang": lang})
+                for loc in cfg.locations[:2]:
+                    add(f"{local} {loc}", "location", 63 - i,
+                        reason=f"{lang} title + location", meta={"lang": lang})
+
+    # ---------------------------------------------------------------- #
     # Family 5: informal / community wording (priority 45-40)
     # ---------------------------------------------------------------- #
     informal_phrases = [
@@ -263,6 +312,12 @@ def plan_queries(
     # Sort by priority desc; truncate to max_queries.
     # ---------------------------------------------------------------- #
     specs = _dedupe(specs)
+    # include_english=False: drop English-worded role/keyword queries once
+    # at least one other language is searched (site:/company queries stay).
+    if not getattr(cfg, "include_english", True) and any(x != "en" for x in languages):
+        neutral = {"ats", "jobboard", "company"}
+        specs = [s for s in specs
+                 if s.category in neutral or s.meta.get("lang") != "en"]
     specs.sort(key=lambda s: (-s.priority, s.query_string.lower()))
 
     if max_queries is None:
@@ -270,7 +325,11 @@ def plan_queries(
         max_queries = getattr(cfg, "max_queries_per_scan", None) or 24
     max_queries = max(1, int(max_queries))
     if len(specs) > max_queries:
-        specs = specs[:max_queries]
+        board_specs = [s for s in specs if s.category == "jobboard"]
+        quota = min(len(board_specs), max(1, max_queries // 3))
+        reserved = board_specs[:quota]
+        rest = [s for s in specs if s not in reserved][: max_queries - len(reserved)]
+        specs = sorted(rest + reserved, key=lambda s: (-s.priority, s.query_string.lower()))
     return specs
 
 

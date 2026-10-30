@@ -79,6 +79,12 @@ def _check_one(
         if et and et not in allowed:
             return None, f"employment_type mismatch: {et} not in {sorted(allowed)}"
         # unknown is allowed when user did not restrict
+    # 1b) language the posting is written in — only when the user restricted
+    # it; an undetected language (None) always passes.
+    wanted_langs = {x.strip().lower() for x in (getattr(cfg, "description_languages", None) or []) if x}
+    job_lang = (getattr(job, "description_language", None) or "").lower()
+    if wanted_langs and job_lang and job_lang not in wanted_langs:
+        return None, f"written in {job_lang!r}, not in {sorted(wanted_langs)}"
     # 2) exclude keywords (omit obvious miss before doing work)
     descriptor = (
         (job.title or "") + " " + (job.company or "") + " " + (job.location or "") + " " + (job.description or "")

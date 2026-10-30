@@ -5,7 +5,9 @@ Returns plain structured dict for later upsert into `CandidateProfile`.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -56,22 +58,42 @@ def _suffix_is_supported(p: Path) -> str:
     return ""
 
 
+#: Below this many non-space characters a PDF counts as "no text layer"
+#: and local OCR is attempted (when available).
+OCR_MIN_CHARS = 80
+
+
 def parse_cv(path: str | Path, *, extract_sections: bool = True) -> Dict[str, Any]:
+    """Extract a CV locally.  Nothing is sent to any external service.
+
+    Result keys: ``cv_path``, ``raw_text``, ``fields``, ``confidence``
+    (per field: high / medium / low / missing), ``method`` ("text",
+    "docx", "ocr" or "fallback") and ``notes`` (human-readable caveats).
+    """
     p = Path(path)
-    text = _read_raw(p)
-    if extract_sections:
-        fields = _split_sections(text)
-    else:
-        fields = {}
+    text, method, notes = _read_raw_ex(p)
+    fields = _split_sections(text) if extract_sections else {}
+    confidence = dict(fields.get("_confidence", {}))
+    if method in ("ocr", "fallback"):
+        # OCR / crude-fallback text is never "high" confidence.
+        confidence = {k: ("medium" if v == "high" else v) for k, v in confidence.items()}
     return {
         "cv_path": str(p),
         "raw_text": text,
         "fields": fields,
-        "confidence": fields.get("_confidence", {}),
+        "confidence": confidence,
+        "method": method,
+        "notes": notes,
     }
 
 
 def _read_raw(p: Path) -> str:
+    return _read_raw_ex(p)[0]
+
+
+def _read_raw_ex(p: Path) -> Tuple[str, str, List[str]]:
+    """(text, method, notes)."""
+    notes: List[str] = []
     if not p.exists():
         raise FileNotFoundError(f"CV file not found: {p}")
     fmt = _suffix_is_supported(p)
@@ -98,10 +120,19 @@ def _read_raw(p: Path) -> str:
             doc = pymupdf.open(str(p))
             try:
                 text = _pdf_blocks_text(doc)
+                method = "text"
+                if len(re.sub(r"\s", "", text)) < OCR_MIN_CHARS:
+                    ocr_text, note = _ocr_pdf(doc)
+                    if note:
+                        notes.append(note)
+                    if len(re.sub(r"\s", "", ocr_text)) > len(re.sub(r"\s", "", text)):
+                        text, method = ocr_text, "ocr"
+                        notes.append("Text was read with OCR from page images; "
+                                     "check every field before saving.")
             finally:
                 doc.close()
-            logger.info("PDF parsed via PyMuPDF: %d chars (%s)", len(text), p.name)
-            return text
+            logger.info("PDF parsed via PyMuPDF (%s): %d chars (%s)", method, len(text), p.name)
+            return text, method, notes
         except Exception:
             # Parse-time failure (not a missing library): encrypted or
             # corrupt PDF. Fall back to the crude regex extractor with a
@@ -111,7 +142,8 @@ def _read_raw(p: Path) -> str:
                 p.name,
             )
             data = p.read_bytes()
-            return _pdf_fallback_extract(data)
+            notes.append("PDF could not be opened normally; low-quality fallback used.")
+            return _pdf_fallback_extract(data), "fallback", notes
     if fmt == ".docx":
         try:
             from docx import Document
@@ -139,10 +171,36 @@ def _read_raw(p: Path) -> str:
                         for cell in row.cells
                     ]
                     parts.append(" | ".join(c for c in cells if c))
-            return "\n".join(parts)
+            return "\n".join(parts), "docx", notes
         except Exception as exc:
             raise RuntimeError(f"Failed to parse DOCX: {exc}") from exc
     raise ValueError(f"Unsupported CV format: {p.name}")
+
+
+def _ocr_pdf(doc) -> Tuple[str, str]:
+    """OCR every page locally with Tesseract (optional).
+
+    Returns (text, note).  Needs the ``pytesseract`` package and the
+    Tesseract program; when either is missing the note says so and the
+    text is empty.  Page images go to a private temp dir that is deleted
+    afterwards; nothing leaves the machine.
+    """
+    try:
+        import pytesseract  # type: ignore
+    except ImportError:
+        return "", ("No text layer found and OCR is not installed "
+                    "(optional: `pip install pytesseract` + the Tesseract program).")
+    lang = os.environ.get("OCR_LANG", "eng+deu")
+    parts: List[str] = []
+    try:
+        with tempfile.TemporaryDirectory(prefix="quackers-ocr-") as tmp:
+            for i in range(doc.page_count):
+                img = os.path.join(tmp, f"page{i}.png")
+                doc[i].get_pixmap(dpi=300).save(img)
+                parts.append(pytesseract.image_to_string(img, lang=lang) or "")
+    except Exception as exc:  # TesseractNotFoundError, missing language pack, ...
+        return "", f"OCR failed: {type(exc).__name__}: {str(exc)[:120]}"
+    return "\n".join(parts).strip(), ""
 
 
 def _pdf_blocks_text(doc) -> str:
@@ -283,230 +341,333 @@ def _pdf_fallback_extract(data: bytes) -> str:
     return " ".join(out).strip()
 
 
-# Canonical section keys returned by `_normalize_heading` (in priority
-# order). Longer / more specific phrases first so they win the exact match.
-# Every phrase accepted by `_HEADING_PHRASES` must resolve here.
-_HEADINGS = [
-    "professional summary", "personal statement", "profile", "summary",
-    "about me", "about", "career objective", "objective",
-    "work experience", "professional experience", "employment history",
-    "work history", "work", "experience", "employment",
-    "technical skills", "core skills", "skills", "technical",
-    "personal projects", "projects",
-    "certifications", "certificates", "certification",
-    "education history", "education", "academics", "academic",
-    "achievements", "achievement", "awards", "honors", "honours",
-    "languages",
-    "interests", "hobbies",
-]
-
-# Exact short-phrase set (lowercased) used by `_is_heading_line` to decide
-# whether an isolated line is a heading. Includes common aliases and the
-# canonical keys above so Title/UPPERcase headings are all recognised.
-_HEADING_PHRASES = frozenset(
-    {
+# Section headings -> canonical section key.  Multilingual (EN / DE / FR /
+# ES / NL / IT / RU) because CVs for European jobs are often not English.
+# Matching is exact on the whole (lower-cased, colon-free) heading line, so
+# sentences such as "I have experience with Python" are never headings.
+SECTION_ALIASES: Dict[str, str] = {}
+_ALIAS_SOURCE: Dict[str, Tuple[str, ...]] = {
+    "summary": (
         "summary", "professional summary", "personal statement", "profile",
-        "about me", "about", "career objective", "objective",
-        "experience", "work experience", "professional experience",
-        "work history", "employment", "employment history", "work",
-        "skills", "technical skills", "core skills", "technical",
-        "skills & tools", "tools & skills",
-        "projects", "personal projects",
-        "certifications", "certificates", "certification",
-        "education", "education history", "academics", "academic",
-        "achievements", "achievement", "awards", "honors", "honours",
-        "languages", "interests", "hobbies",
-    }
+        "professional profile", "about me", "about", "career objective", "objective",
+        "profil", "kurzprofil", "über mich", "zusammenfassung", "persönliches profil",
+        "berufsprofil", "à propos", "profil professionnel", "perfil",
+        "sobre mí", "resumen", "perfil profesional", "profiel", "over mij", "profilo",
+        "о себе", "профиль", "цель",
+    ),
+    "experience": (
+        "experience", "work experience", "professional experience", "employment history",
+        "work history", "employment", "work", "internships", "relevant experience",
+        "berufserfahrung", "erfahrung", "praktische erfahrung", "arbeitserfahrung",
+        "beruflicher werdegang", "werdegang", "praktika", "berufliche erfahrung",
+        "expérience", "expérience professionnelle", "expériences professionnelles",
+        "experiencia", "experiencia laboral", "experiencia profesional", "werkervaring",
+        "ervaring", "esperienza", "esperienze lavorative", "esperienza professionale",
+        "опыт работы", "опыт", "профессиональный опыт", "стажировки",
+    ),
+    "skills": (
+        "skills", "technical skills", "core skills", "technical", "skills & tools",
+        "tools & skills", "key skills", "competencies", "tech stack", "it skills",
+        "kenntnisse", "fähigkeiten", "fachkenntnisse", "it-kenntnisse", "kompetenzen",
+        "fähigkeiten & kenntnisse", "kenntnisse und fähigkeiten", "edv-kenntnisse",
+        "compétences", "compétences techniques", "habilidades", "competencias",
+        "conocimientos", "vaardigheden", "competenze", "навыки", "ключевые навыки",
+        "технические навыки", "компетенции",
+    ),
+    "projects": (
+        "projects", "personal projects", "selected projects", "side projects",
+        "projekte", "projekterfahrung", "projets", "proyectos", "projecten",
+        "progetti", "проекты",
+    ),
+    "certifications": (
+        "certifications", "certificates", "certification", "licenses & certifications",
+        "zertifikate", "zertifizierungen", "weiterbildung", "weiterbildungen",
+        "certificats", "certificaciones", "certificados", "certificaten",
+        "certificazioni", "сертификаты", "курсы",
+    ),
+    "education": (
+        "education", "education history", "academics", "academic", "academic background",
+        "ausbildung", "bildung", "bildungsweg", "studium", "schulbildung",
+        "akademischer werdegang", "formation", "formations", "éducation", "educación",
+        "formación", "formación académica", "opleiding", "opleidingen", "istruzione",
+        "formazione", "образование",
+    ),
+    "achievements": (
+        "achievements", "achievement", "awards", "honors", "honours", "awards & honors",
+        "auszeichnungen", "erfolge", "distinctions", "prix", "logros", "premios",
+        "prestaties", "riconoscimenti", "достижения", "награды",
+    ),
+    "languages": (
+        "languages", "language skills", "sprachen", "sprachkenntnisse", "langues",
+        "idiomas", "talen", "lingue", "языки", "знание языков",
+    ),
+    "interests": (
+        "interests", "hobbies", "interessen", "hobbys", "freizeit", "centres d'intérêt",
+        "loisirs", "intereses", "aficiones", "hobby's", "interessi", "интересы", "хобби",
+    ),
+    "personal": (
+        "personal details", "personal information", "personal data", "contact",
+        "contact details", "persönliche daten", "persönliche angaben", "kontakt",
+        "kontaktdaten", "informations personnelles", "coordonnées", "datos personales",
+        "contacto", "persoonlijke gegevens", "dati personali", "контакты",
+        "личные данные", "контактная информация",
+    ),
+}
+for _key, _phrases in _ALIAS_SOURCE.items():
+    for _ph in _phrases:
+        SECTION_ALIASES.setdefault(_ph, _key)
+
+#: Lines that title the whole document — never a person's name.
+_DOC_TITLES = frozenset({
+    "curriculum vitae", "lebenslauf", "resume", "résumé", "cv", "tabellarischer lebenslauf",
+    "резюме", "currículum", "curriculum",
+})
+
+_BULLET_CHARS = "-*•·▪◦‣–—>"
+_DATE_RE = re.compile(
+    r"(?:(?:0?[1-9]|1[0-2])[./](?:19|20)\d{2}|(?:19|20)\d{2}"
+    r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|mär|mai|okt|dez|janv|févr|"
+    r"avr|juil|déc|ene|abr|ago|dic)\w*\.?\s+(?:19|20)\d{2})",
+    re.I,
+)
+_DATE_RANGE_RE = re.compile(
+    _DATE_RE.pattern + r"\s*(?:-|–|—|to|bis|à|до|until)\s*(?:" + _DATE_RE.pattern
+    + r"|present|current|now|today|heute|aktuell|jetzt|bis heute|aujourd'hui|actualidad|"
+    r"presente|heden|oggi|настоящее время|н\.\s*в\.)",
+    re.I,
 )
 
+
 def _normalize_heading(h: str) -> Optional[str]:
-    hh = (h or "").strip().lower()
-    hh = re.sub(r":$", "", hh).strip()
-    if not hh:
-        return None
-    for canonical in _HEADINGS:
-        if canonical == hh:
-            return canonical
-    # fuzzy
-    for canonical in _HEADINGS:
-        if canonical in hh:
-            return canonical
-    return None
+    """Section key for a heading text, or None."""
+    hh = re.sub(r"[:：]\s*$", "", (h or "").strip().lower()).strip()
+    hh = re.sub(r"\s+", " ", hh)
+    return SECTION_ALIASES.get(hh) if hh else None
 
 
 def _is_heading_line(stripped: str) -> bool:
-    """True if `stripped` looks like a standalone section heading.
+    """True if ``stripped`` is a standalone section heading (any case,
+    optional trailing colon, at most 5 words, exact alias match)."""
+    if not stripped or stripped[0] in _BULLET_CHARS + "#}】":
+        return False
+    if len(stripped) > 40 or stripped.endswith((".", "!", "?")):
+        return False
+    cand = stripped.rstrip(":：").strip()
+    if not (1 <= len(cand.split()) <= 5):
+        return False
+    return _normalize_heading(cand) is not None
 
-    CVs produced by FlowCV / PDF text dumps / DOCX render headings as a
-    short, isolated line in ANY case ("Skills", "EXPERIENCE", "Education:").
-    We accept it when:
-      - it is short (a few words / chars) so body text is never mistaken
-        for a heading,
-      - it is not list/bullet content (no leading "-", "*", "•", "."),
-      - it does not end like a sentence (no trailing period),
-      - and it **exactly** matches a known heading (case-insensitive,
-        allowing a trailing colon).
-    The "exact match" requirement keeps sentences like
-    "I have experience with Python" out — those are not headings.
-    """
-    if not stripped:
-        return False
-    # Not a heading if it's a bullet or a long line.
-    if stripped[0] in {"-", "*", "•", "·", "•", "·", "#", ">", "}", "】"}:
-        return False
-    if len(stripped) > 30:
-        return False
-    if stripped.endswith((".", "!", "?")):
-        return False
-    # Normalise the candidate to a colon-free lowercase phrase.
-    cand = stripped.rstrip(":").strip().lower()
-    if not cand:
-        return False
-    # Must be 1-4 words (guards out sentences that happen to be short).
-    words = cand.split()
-    if not (1 <= len(words) <= 4):
-        return False
-    # Build a set of all known heading phrases (deduped, lowercased) plus
-    # a few common variants, and require an exact phrase match.
-    if cand in _HEADING_PHRASES:
-        return True
-    return False
+
+def _inline_heading(stripped: str) -> Optional[Tuple[str, str]]:
+    """"Skills: Python, SQL" -> ("skills", "Python, SQL")."""
+    m = re.match(r"^([^:：|]{2,40})\s*[:：|]\s*(.+)$", stripped)
+    if not m:
+        return None
+    key = _normalize_heading(m.group(1))
+    if key is None or key == "personal":
+        return None
+    return key, m.group(2).strip()
 
 
 def _split_sections(text: str) -> Dict[str, Any]:
-    """Best-effort split using Markdown headings + a few keyword heuristics."""
+    """Split CV text into sections by (multilingual) headings and extract
+    contact details.  Nothing is guessed: unknown content stays empty."""
     sections: Dict[str, List[str]] = {}
-    current = None
-    lines = text.splitlines()
-    for raw in lines:
-        line = raw.rstrip()
-        if not line:
-            continue
-        stripped = line.strip()
-        # Detect a heading line: Markdown (#...), ALL-CAPS, or a short
-        # standalone Title-case line (e.g. "Experience", "Skills") that
-        # exactly matches a known heading. This is what most real CVs
-        # (PDF text dumps, DOCX, FlowCV outputs) actually produce.
-        m: Optional[str] = None
-        if stripped.startswith("#"):
-            # Markdown heading
-            m = _normalize_heading(stripped.lstrip("#").strip())
-        elif _is_heading_line(stripped):
-            m = _normalize_heading(stripped)
-        if m:
-            current = m
-            sections.setdefault(current, [])
-            continue
-        if current is not None:
-            sections[current].append(raw.rstrip())
-    # Personal fields: pass only the **header** block (everything before the
-    # first recognised heading), not the entire flattened CV.  Contact
-    # details (name / tagline / email / phone / location / site) always live
-    # above the first section heading in real-world CVs; passing the whole
-    # document is what caused `name` to absorb the entire body on FlowCV
-    # resumes (the 2880-char "name" bug).
+    headings_found: List[str] = []
+    current: Optional[str] = None
     header_block: List[str] = []
-    for line in text.splitlines():
-        s = line.strip()
-        if _is_heading_line(s) or s.startswith("#"):
-            break  # reached the first section heading — everything above was header
-        header_block.append(line)
-    header_text = "\n".join(header_block)
-    name, email, phone, linkedin, website = _extract_personal(header_text)
-    return {
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        key: Optional[str] = None
+        rest = ""
+        if stripped.startswith("#"):
+            key = _normalize_heading(stripped.lstrip("#").strip())
+        elif _is_heading_line(stripped):
+            key = _normalize_heading(stripped)
+        else:
+            inline = _inline_heading(stripped)
+            if inline:
+                key, rest = inline
+        if key:
+            current = key
+            if key not in headings_found:
+                headings_found.append(key)
+            sections.setdefault(current, [])
+            if rest:
+                sections[current].append(rest)
+            continue
+        if current is None:
+            header_block.append(stripped)
+        else:
+            sections[current].append(stripped)
+
+    # Contact details live above the first heading (or in a "Personal
+    # details" section).  Email / phone / URLs are unambiguous patterns, so
+    # they may also come from elsewhere; the *name* only from the header.
+    header_text = "\n".join(header_block + sections.get("personal", []))
+    name, email, phone, linkedin, website, name_source = _extract_personal(header_text)
+    if not (email and phone and linkedin and website):
+        _, e2, p2, l2, w2, _ = _extract_personal(text)
+        email, phone, linkedin, website = email or e2, phone or p2, linkedin or l2, website or w2
+
+    def joined(key: str) -> str:
+        return "\n".join(sections.get(key, [])).strip()
+
+    fields: Dict[str, Any] = {
         "name": name,
         "email": email,
         "phone": phone,
         "linkedin": linkedin,
         "website": website,
-        "summary": "\n".join(sections.get("summary", [])).strip(),
-        "_experience_raw": "\n".join(sections.get("experience", [])).strip(),
-        "_skills_raw": "\n".join(sections.get("skills", [])).strip(),
-        "_education_raw": "\n".join(sections.get("education", [])).strip(),
-        "_projects_raw": "\n".join(sections.get("projects", [])).strip(),
-        "_certifications_raw": "\n".join(sections.get("certifications", [])).strip(),
-        "_languages_raw": "\n".join(sections.get("languages", [])).strip(),
-        "_achievements_raw": "\n".join(sections.get("achievement", [])).strip(),
+        "summary": joined("summary"),
+        "_experience_raw": joined("experience"),
+        "_skills_raw": joined("skills"),
+        "_education_raw": joined("education"),
+        "_projects_raw": joined("projects"),
+        "_certifications_raw": joined("certifications"),
+        "_languages_raw": joined("languages"),
+        "_achievements_raw": joined("achievements"),
+        "experience_entries": _group_entries(sections.get("experience", [])),
+        "education_entries": _group_entries(sections.get("education", [])),
+        "sections_found": headings_found,
     }
+    fields["_confidence"] = _confidence_for(fields, name_source=name_source)
+    return fields
 
 
-def _extract_personal(text: str) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
-    name = None
-    email = None
-    phone = None
-    linkedin = None
-    website = None
+def _is_bullet(line: str) -> bool:
+    return bool(line) and line[0] in _BULLET_CHARS
 
-    email_m = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", text)
-    if email_m:
-        email = email_m.group(0)
 
-    # Phone: (000) 000-000 000 / 000-000-0000 / +00 000 000 000
-    phone_m = re.search(
-        r"(\+?\d[\d\s\-]{7,15}\d)",
-        text,
-    )
-    if phone_m:
-        phone = phone_m.group(0)
-
-    linkedin_m = re.search(
-        r"(?:linkedin\.com(?:/in|pub)/[\w\-]+)|(?:hnhdn\.in|linkedin\.com/in)/[\w\-]+",
-        text,
-    )
-    if linkedin_m:
-        linkedin = linkedin_m.group(0)
-
-    website_m = re.search(
-        r"https?://(?!www\.linkedin)[a-z0-9\-]+\.[a-z]{2,}(/\S*)?",
-        text,
-        re.I,
-    )
-    if website_m:
-        website = website_m.group(0)
-
-    # Name: *first clean line* in the header block.  A clean name line is
-    #  - 2-5 words,
-    #  - letters + hyphens + apostrophes only (no `|`, `&`, `@`, `+`, digits,
-    #    or slaszes),
-    #  - not an ALL-CAPS heading (guarded by the caller passing only the
-    #    header, but the char-class filter already rejects "SUMMARY").
-    # The "Product-Minded Software Engineering Student | Python, SQL & Data
-    # Products" *tagline* is **not** a name — it contains `|` and `&`, so the
-    # char-class excludes it.  This is what was causing `name` to grab the
-    # tagline line in FlowCV exports.
-    name = ""
-    for ln in (text.splitlines() or [""]):
-        s = ln.strip()
-        if not s:
+def _group_entries(lines: List[str]) -> List[str]:
+    """Group a section's lines into entries ("Title - Company (dates) |
+    detail | detail").  A new entry starts at a non-bullet line once the
+    current entry already has a date range plus details, or bullet
+    details.  Text is only re-joined, never rewritten."""
+    entries: List[List[str]] = []
+    for line in lines:
+        if not entries:
+            entries.append([line])
             continue
-        if any(ch in s for ch in "@+/*|&"):   # email/phone/url/tagline/separators
+        cur = entries[-1]
+        has_dates = any(_DATE_RANGE_RE.search(x) for x in cur)
+        has_bullets = any(_is_bullet(x) for x in cur[1:])
+        dated = _DATE_RANGE_RE.search(line) is not None
+        starts_new = not _is_bullet(line) and (
+            has_bullets
+            or (has_dates and dated)
+            or (has_dates and len(cur) >= 2 and len(line) < 80
+                and not line.endswith((".", ",")))
+        )
+        if starts_new:
+            entries.append([line])
+        else:
+            cur.append(line)
+    out = []
+    for e in entries:
+        parts = [e[0]] + [x.lstrip(_BULLET_CHARS + " ").strip() for x in e[1:]]
+        out.append(" | ".join(p for p in parts if p))
+    return out
+
+
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}", re.I)
+_PHONE_RE = re.compile(r"(?<![\w/])(\+?\(?\d[\d\s()./-]{6,18}\d)(?![\w/])")
+_LINKEDIN_RE = re.compile(r"(?:https?://)?(?:[a-z]{2,3}\.)?linkedin\.com/(?:in|pub)/[\w%\-]+/?", re.I)
+_WEBSITE_RE = re.compile(
+    r"(?:https?://|www\.)[^\s|,;()<>]+|(?<![\w@.])(?:github\.com|gitlab\.com)/[\w\-]+", re.I
+)
+_YEAR_SPAN_RE = re.compile(r"(?:19|20)\d{2}\s*[-–/]\s*(?:(?:0?[1-9]|1[0-2])[./])?(?:19|20)\d{2}")
+
+
+def _extract_personal(text: str) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str], str]:
+    """(name, email, phone, linkedin, website, name_source).
+
+    ``name_source`` is "label" for an explicit "Name: ..." line, "header"
+    for the first clean line of the header, "" when not found.
+    """
+    email = phone = linkedin = website = None
+
+    m = _EMAIL_RE.search(text)
+    if m:
+        email = m.group(0)
+    for m in _PHONE_RE.finditer(text):
+        cand = m.group(1).strip()
+        digits = re.sub(r"\D", "", cand)
+        if not 7 <= len(digits) <= 15:
             continue
-        if any(ch in s for ch in "0123456789"):  # dates, age, year
-            continue
-        # Only letters, spaces, hyphens, apostrophes, middot allowed.
-        if not re.fullmatch(r"[A-Za-z\-\'\s·.]+", s):
-            continue
-        words = [w for w in s.split() if w]
-        if not (2 <= len(words) <= 5):   # 1-word = too generic; 6+ = probably a sentence
-            continue
-        name = s
+        if not cand.startswith("+") and (_DATE_RANGE_RE.search(cand) or _YEAR_SPAN_RE.search(cand)):
+            continue  # "2019 - 2023", "06/2025-09/2025" are dates, not phones
+        phone = cand
         break
+    m = _LINKEDIN_RE.search(text)
+    if m:
+        linkedin = m.group(0).rstrip("/")
+    for m in _WEBSITE_RE.finditer(text):
+        url = m.group(0).rstrip(".")
+        if "linkedin.com" not in url.lower() and "@" not in url:
+            website = url
+            break
 
-    if not name:
-        # Last resort: literal "Name: ..." line if present
-        name_line = re.search(r"^\s*Name\s*:\s*([^\n]+)", text, re.I | re.M)
-        name = name_line.group(1).strip() if name_line else ""
+    labelled = re.search(
+        r"^\s*(?:name|vor-?\s*und\s*nachname|nom|nombre|naam|nome|имя|фио)\s*[:：]\s*([^\n]+)$",
+        text, re.I | re.M)
+    if labelled and _looks_like_name(labelled.group(1).strip()):
+        return labelled.group(1).strip(), email, phone, linkedin, website, "label"
 
-    return name, email, phone, linkedin, website
+    for ln in text.splitlines():
+        s = ln.strip()
+        if _looks_like_name(s):
+            return s, email, phone, linkedin, website, "header"
+    return "", email, phone, linkedin, website, ""
 
 
-def _confidence_for(fields: Dict[str, Any]) -> Dict[str, str]:
-    out = {}
-    items = (
-        ("name", fields.get("name")),
-        ("email", fields.get("email")),
-        ("phone", fields.get("phone")),
-    )
-    for name, val in items:
-        out[name] = "high" if val else "missing"
+_NAME_PARTICLES = frozenset({"van", "von", "de", "der", "den", "da", "di", "del", "la", "le",
+                             "zu", "bin", "al", "dos", "du"})
+
+
+def _looks_like_name(s: str) -> bool:
+    """2-5 capitalised words of letters (any script), hyphens, apostrophes
+    or dots; not a heading, document title or tagline."""
+    if not s or s.lower() in _DOC_TITLES or _normalize_heading(s):
+        return False
+    if any(ch in s for ch in "@+/*|&,:") or any(ch.isdigit() for ch in s):
+        return False
+    if not all(ch.isalpha() or ch in " -'’·." for ch in s):
+        return False
+    words = s.split()
+    if not (2 <= len(words) <= 5):
+        return False
+    return all(w[0].isupper() or w.lower() in _NAME_PARTICLES for w in words)
+
+
+def _confidence_for(fields: Dict[str, Any], *, name_source: str = "") -> Dict[str, str]:
+    """Per-field extraction confidence: high / medium / low / missing.
+
+    * pattern-matched contact fields (email, phone, URLs): high
+    * name: high from a "Name:" label, medium from the first header line
+    * sections: high under a recognised heading, low when the text looks
+      garbled
+    """
+    from services.cv_validation import looks_garbled
+
+    out: Dict[str, str] = {}
+    if not fields.get("name"):
+        out["name"] = "missing"
+    else:
+        out["name"] = "high" if name_source == "label" else "medium"
+    for key in ("email", "phone", "linkedin", "website"):
+        out[key] = "high" if fields.get(key) else "missing"
+    for key, raw_key in (("summary", "summary"), ("experience", "_experience_raw"),
+                         ("skills", "_skills_raw"), ("education", "_education_raw"),
+                         ("projects", "_projects_raw"), ("certifications", "_certifications_raw"),
+                         ("languages", "_languages_raw"), ("achievements", "_achievements_raw")):
+        val = fields.get(raw_key) or ""
+        if not val.strip():
+            out[key] = "missing"
+        elif looks_garbled(val):
+            out[key] = "low"
+        else:
+            out[key] = "high"
     return out

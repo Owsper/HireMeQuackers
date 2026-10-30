@@ -32,6 +32,10 @@ class ScanSummary:
     queries_executed: int = 0
     # Per source {name: {attempted, fetched, parsed, duplicates, failed}}
     per_source_counts: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    # Per platform the listing lives on (Indeed, Ashby, Company site, ...):
+    # {label: {found, unique, cross_source_duplicates}}
+    per_platform: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    cross_source_duplicates: int = 0
 
     def detail(self) -> Dict[str, Any]:
         return {
@@ -43,11 +47,48 @@ class ScanSummary:
             "listings": len(self.all_listings),
             "scan_duration_seconds": round(self.scan_duration_seconds, 1),
             "queries_executed": self.queries_executed,
+            "cross_source_duplicates": self.cross_source_duplicates,
+            "per_platform": self.per_platform,
             "per_source": {
                 name: sr.details()
                 for name, sr in self.per_source.items()
             },
         }
+
+
+def _platform_row(summary: ScanSummary, label: str) -> Dict[str, int]:
+    return summary.per_platform.setdefault(
+        label, {"found": 0, "unique": 0, "cross_source_duplicates": 0})
+
+
+def _add_listing(summary: ScanSummary, vacancies: Dict[str, List[int]], item: RawListing) -> None:
+    """Append ``item`` unless the same vacancy (title + company + city)
+    already came from another source.  A direct employer/ATS listing
+    replaces a job-board copy, so users are linked to the original."""
+    from services.platforms import is_aggregator, platform_of, same_city, vacancy_key
+
+    label = platform_of(item.original_url)
+    row = _platform_row(summary, label)
+    row["found"] += 1
+    vkey = vacancy_key(item.title, item.company)
+    if vkey:
+        for idx in vacancies.get(vkey, []):
+            existing = summary.all_listings[idx]
+            if not same_city(existing.location, item.location):
+                continue
+            summary.cross_source_duplicates += 1
+            row["cross_source_duplicates"] += 1
+            if is_aggregator(existing.original_url) and not is_aggregator(item.original_url):
+                old = _platform_row(summary, platform_of(existing.original_url))
+                old["unique"] -= 1
+                summary.all_listings[idx] = item
+                row["unique"] += 1
+                row["cross_source_duplicates"] -= 1
+                old["cross_source_duplicates"] += 1
+            return
+        vacancies.setdefault(vkey, []).append(len(summary.all_listings))
+    summary.all_listings.append(item)
+    row["unique"] += 1
 
 
 class SearchEngine:
@@ -62,7 +103,7 @@ class SearchEngine:
     of letting each source spin up its own.
     """
 
-    def __init__(self, *, max_workers: int = 5, max_sources: int = 8):
+    def __init__(self, *, max_workers: int = 5, max_sources: int = 20):
         self.max_workers = max(1, int(max_workers))
         self.max_sources = max(1, int(max_sources))
 
@@ -101,6 +142,7 @@ class SearchEngine:
             queries_executed=len(plan),
         )
         seen_urls: set[str] = set()
+        vacancies: Dict[str, List[int]] = {}
         total = len(enabled)
 
         def _run_one(source):
@@ -160,7 +202,7 @@ class SearchEngine:
                         if key in seen_urls:
                             continue
                         seen_urls.add(key)
-                        summary.all_listings.append(item)
+                        _add_listing(summary, vacancies, item)
                     summary.total_discovered += len(result.listings)
                 else:
                     # Per-source failure must NOT discard the

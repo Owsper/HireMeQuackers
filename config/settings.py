@@ -69,7 +69,7 @@ class AppConfig(BaseModel):
     rate_limit_min_seconds: float = 1.0
     max_response_bytes: int = 3 * 1024 * 1024
 
-    scan_max_sources: int = 8
+    scan_max_sources: int = 20
     scan_request_cap_per_source: int = 30
 
     # -- max-coverage discovery engine (process-level defaults) --
@@ -131,7 +131,7 @@ def get_config() -> AppConfig:
         min_retry_attempts=_env_int("MAX_RETRY_ATTEMPTS", 3),
         rate_limit_min_seconds=_env_float("RATE_LIMIT_MIN_SECONDS", 1.0),
         max_response_bytes=_env_int("MAX_RESPONSE_BYTES", 3 * 1024 * 1024),
-        scan_max_sources=_env_int("SCAN_MAX_SOURCES", 8),
+        scan_max_sources=_env_int("SCAN_MAX_SOURCES", 20),
         scan_request_cap_per_source=_env_int("SCAN_REQUEST_CAP_PER_SOURCE", 30),
         search_provider=_env("SEARCH_PROVIDER", "brave"),
         brave_search_api_key=_env("BRAVE_SEARCH_API_KEY", ""),

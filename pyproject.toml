@@ -47,6 +47,12 @@ pdf = [
 browser = [
     "playwright>=1",
 ]
+ocr = [
+    "pytesseract>=0.3",
+]
+lang = [
+    "langdetect>=1.0.9",
+]
 
 [build-system]
 requires = ["setuptools>=61", "wheel"]

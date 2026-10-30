@@ -35,6 +35,9 @@ class DiscoverySummary:
     duplicates: int = 0
     failures: List[dict] = field(default_factory=list)
     per_source: dict = field(default_factory=dict)
+    per_platform: dict = field(default_factory=dict)
+    cross_source_duplicates: int = 0
+    ats_boards_discovered: int = 0
     matched_jobs: List[Job] = field(default_factory=list)
     excluded: List[dict] = field(default_factory=list)
     status: str = "error"
@@ -68,6 +71,9 @@ class DiscoverySummary:
                 "avg_confidence": self.enrichment_avg_confidence,
             },
             "per_source": self.per_source,
+            "per_platform": self.per_platform,
+            "cross_source_duplicates": self.cross_source_duplicates,
+            "ats_boards_discovered": self.ats_boards_discovered,
         }
 
 
@@ -123,6 +129,17 @@ def run_discovery(
             error_message=result.error_message,
             is_enabled=True,
         )
+    # Step 1b: remember ATS boards seen in results so later scans query
+    # them directly through the ATS adapters (non-fatal).
+    try:
+        from services.ats_detection import detect_ats_from_url, register_matches
+
+        matches = [m for m in (detect_ats_from_url(l.original_url or "")
+                               for l in scan_summary.all_listings) if m]
+        summary.ats_boards_discovered = register_matches(matches, via="scan")
+    except Exception:
+        log.exception("ATS board registration failed (non-fatal)")
+
     # Step 2: Normalize + dedupe + create/update Job rows
     seen_urls = set()
     new_jobs = 0
@@ -139,8 +156,12 @@ def run_discovery(
             norm.get("description", "") or "",
         )
         norm["content_fingerprint"] = fp
-        # Look up by fingerprint
-        existing_row, created = db.get_or_create_job_by_fingerprint(session, fp, **norm)
+        # Same vacancy already stored from another source/URL?
+        same = _find_same_vacancy(session, norm)
+        if same is not None:
+            existing_row, created = same, False
+        else:
+            existing_row, created = db.get_or_create_job_by_fingerprint(session, fp, **norm)
         if created:
             new_jobs += 1
         else:
@@ -202,6 +223,8 @@ def run_discovery(
     summary.per_source = {
         n: r.details() for n, r in scan_summary.per_source.items()
     }
+    summary.per_platform = dict(scan_summary.per_platform)
+    summary.cross_source_duplicates = scan_summary.cross_source_duplicates
     summary.completed_at = utcnow()
     summary.duration_seconds = (
         (summary.completed_at - summary.started_at).total_seconds()
@@ -218,10 +241,27 @@ def run_discovery(
         new_jobs=summary.new_jobs,
         duplicates=summary.duplicates,
         failures=summary.failures,
+        platform_stats=summary.per_platform,
     )
     session.commit()
     session.close()
     return summary
+
+
+def _find_same_vacancy(session, norm: dict) -> Optional[Job]:
+    """A stored job with the same title + company (+ compatible city)."""
+    from sqlalchemy import func
+    from services.platforms import same_city, vacancy_key
+
+    key = vacancy_key(norm.get("title", ""), norm.get("company", ""))
+    if not key:
+        return None
+    company = (norm.get("company") or "").strip().lower()
+    for row in session.query(Job).filter(func.lower(Job.company) == company).limit(200):
+        if (vacancy_key(row.title or "", row.company or "") == key
+                and same_city(row.location, norm.get("location"))):
+            return row
+    return None
 
 
 def list_enabled(cfg: SearchConfig) -> List[str]:

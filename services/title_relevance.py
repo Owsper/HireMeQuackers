@@ -43,7 +43,8 @@ from config.search_intent import SearchIntent
 # Token + normalization helpers
 # ---------------------------------------------------------------------------
 
-_TOKEN_RE = re.compile(r"[^a-z0-9]+", re.I)
+# Unicode-aware: "Softwareentwickler", "développeur", "München" keep their letters.
+_TOKEN_RE = re.compile(r"[\W_]+", re.UNICODE)
 
 
 def _tokens(text: str) -> List[str]:
@@ -104,7 +105,7 @@ def _norm_title(text: str) -> str:
         return ""
     t = text.lower().strip()
     t = t.replace("-", " ").replace("_", " ")
-    t = re.sub(r"[^a-z0-9\s]", " ", t)
+    t = re.sub(r"[^\w\s]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
 
@@ -226,6 +227,24 @@ def _seniority_ok(job_seniority: Optional[str], target: str) -> bool:
 
 
 def classify_title(job_title: str, intent: SearchIntent) -> TitleRelevance:
+    """Classify ``job_title``; a local-language title ("Werkstudent
+    Softwareentwicklung (m/w/d)") is retried in its canonical English
+    form and the better label wins."""
+    result = _classify_title(job_title, intent)
+    if result.label == "exact":
+        return result
+    from services.multilingual import canonicalize_title
+
+    canon = canonicalize_title(job_title)
+    if canon and canon != _norm_title(job_title):
+        alt = _classify_title(canon, intent)
+        if _SCORE_BY_LABEL[alt.label] > _SCORE_BY_LABEL[result.label]:
+            alt.reason += f" (title read as {canon!r})"
+            return alt
+    return result
+
+
+def _classify_title(job_title: str, intent: SearchIntent) -> TitleRelevance:
     """Returns a `TitleRelevance` for `job_title` against `intent`.
 
     An *empty* intent (no primary_title, no synonyms) means "no

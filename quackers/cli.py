@@ -307,6 +307,18 @@ def _print_scan_result(result: Dict[str, Any]) -> None:
             ["Source", "Status", "Attempted", "Fetched", "Parsed", "Duplicates", "Failed", "Error"],
             max_widths={"Error": 60},
         )
+    platforms = result.get("per_platform") or {}
+    if platforms:
+        term.heading("Platforms")
+        term.table(
+            [{"Platform": name, "Found": d.get("found", 0), "Unique": d.get("unique", 0),
+              "Cross-source dupes": d.get("cross_source_duplicates", 0)}
+             for name, d in sorted(platforms.items(), key=lambda kv: -kv[1].get("unique", 0))],
+            ["Platform", "Found", "Unique", "Cross-source dupes"],
+        )
+    if result.get("ats_boards_discovered"):
+        term.info(f"Discovered {result['ats_boards_discovered']} new ATS board(s); "
+                  "they will be queried directly next scan.")
     if result.get("new_jobs"):
         term.info("\nSee the new jobs with `quackers jobs --new`.")
 
@@ -479,6 +491,8 @@ def cmd_job(args) -> None:
             ("Education", job.education_requirements),
             ("Experience", job.experience_requirements),
             ("Languages", job.language_requirements),
+            ("Must speak", ", ".join(job.required_languages) if job.required_languages_json else None),
+            ("Written in", job.description_language),
         ]
         app_row = store.application_row(app, job) if app else None
         notes = app.notes if app else ""
@@ -821,6 +835,7 @@ def _profile_form(p) -> Dict[str, Any]:
         "projects": _lines(p.projects),
         "languages": _lines(p.languages),
         "cv_path": p.cv_path or "",
+        "other": _json_get(p.other_json) or {},
     }
 
 
@@ -855,6 +870,7 @@ def _form_to_fields(form: Dict[str, Any]) -> Dict[str, Any]:
         "projects": _bullets(as_lines("projects")),
         "languages": _bullets(as_lines("languages")),
         "cv_path": form.get("cv_path") or None,
+        "other": form.get("other") if isinstance(form.get("other"), dict) and form.get("other") else None,
     }
 
 
@@ -899,6 +915,10 @@ def cmd_profile_show(args) -> None:
         if form[key]:
             term.info(f"  {key.capitalize()}:")
             term.bullets(form[key], indent=4)
+    for key, val in (form.get("other") or {}).items():
+        if val:
+            term.kv([(key.replace("_", " ").capitalize(),
+                      ", ".join(map(str, val)) if isinstance(val, list) else val)])
 
 
 def _store_cv_copy(src: Path) -> Path:
@@ -934,6 +954,24 @@ def cmd_profile_import(args) -> None:
     except Exception as exc:  # noqa: BLE001
         raise CliError(f"Could not parse CV: {exc}") from exc
 
+    form = _extraction_form(extraction, saved, src.name)
+    term.ok(f"Parsed {src.name} (copy stored at {saved}).")
+    _review_and_save(form, edit=args.edit, yes=args.yes, inactive=args.inactive)
+
+
+def _extraction_form(extraction: Dict[str, Any], saved: Path, label: str) -> Dict[str, Any]:
+    """Form from a parse_cv() result; refuses unreadable PDFs (never an empty profile)."""
+    from services.cv_validation import readable_text_problem
+
+    problem = readable_text_problem(extraction.get("raw_text") or "")
+    notes = list(extraction.get("notes") or [])
+    if problem:
+        extra = "".join(f"\n  ({n})" for n in notes)
+        raise CliError(
+            f"Could not read {label}: {problem}{extra}\n"
+            "Nothing was saved. Use the JSON template instead:\n"
+            "  quackers cv-template          (creates it and opens your editor)\n"
+            "  quackers cv <filled.json>     (validates, previews, asks before saving)")
     fields = extraction.get("fields", {}) or {}
 
     def raw_lines(key: str) -> List[str]:
@@ -949,32 +987,97 @@ def cmd_profile_import(args) -> None:
         "skills": _split_list(fields.get("_skills_raw") or ""),
         "certifications": _split_list(fields.get("_certifications_raw") or ""),
         "achievements": _split_list(fields.get("_achievements_raw") or ""),
-        "experience": raw_lines("_experience_raw"),
-        "education": raw_lines("_education_raw"),
+        # Entries group a job's title line with its bullet details.
+        "experience": fields.get("experience_entries") or raw_lines("_experience_raw"),
+        "education": fields.get("education_entries") or raw_lines("_education_raw"),
         "projects": raw_lines("_projects_raw"),
         "languages": raw_lines("_languages_raw"),
         "cv_path": str(saved),
     }
+    if form["name"] == "Unknown":
+        form["name"] = ""  # never save a made-up name
+    for note in notes:
+        term.warn(note)
+    # Shown in the preview only; removed before editing/saving.
+    form["_confidence"] = dict(extraction.get("confidence") or {})
+    return form
 
-    term.ok(f"Parsed {src.name} (copy stored at {saved}).")
-    confidence = extraction.get("confidence", {}) or {}
-    if confidence:
-        term.info("Extraction confidence:")
-        term.kv(confidence.items())
 
-    if args.edit:
+STATUS_STYLE = {"ok": "green", "missing": "dim", "suspect": "yellow"}
+
+
+def _print_cv_preview(form: Dict[str, Any], validation,
+                      confidence: Optional[Dict[str, str]] = None) -> None:
+    rows = []
+    confidence = confidence or {}
+    for key, status in validation.status.items():
+        val = form.get(key)
+        if isinstance(val, list):
+            shown = (f"{len(val)} item(s): " + "; ".join(map(str, val[:3]))) if val else ""
+        else:
+            shown = str(val or "")
+        row = {"field": key, "status": term.style(status, STATUS_STYLE.get(status, "")),
+               "value": shown}
+        if confidence:
+            row["confidence"] = confidence.get(key, "")
+        rows.append(row)
+    for key, val in (form.get("other") or {}).items():
+        rows.append({"field": key, "status": "extra",
+                     "value": ", ".join(map(str, val)) if isinstance(val, list) else str(val)})
+    cols = ["field", "status"] + (["confidence"] if confidence else []) + ["value"]
+    term.table(rows, cols, max_widths={"value": 70})
+    for e in validation.errors:
+        term.error(e)
+    for w in validation.warnings:
+        term.warn(w)
+
+
+def _review_and_save(form: Dict[str, Any], *, edit: bool = False, yes: bool = False,
+                     inactive: bool = False, save: bool = True) -> Optional[Any]:
+    """Validate -> preview -> (fix in editor) -> confirm -> save as a NEW profile.
+
+    Validation errors always block saving, even with --yes.  The previous
+    profile row is never modified; it is only deactivated when the new one
+    becomes active.
+    """
+    from services import candidate_profile as cp
+    from services.cv_validation import validate_form
+
+    confidence = form.pop("_confidence", None)
+    if edit:
         try:
             form = term.edit_json(form, label="profile") or form
         except ValueError as exc:
             raise CliError(str(exc)) from exc
-    else:
-        term.info("\nExtracted fields (re-run with --edit to fix them before saving):")
-        term.kv([(k, ", ".join(v) if isinstance(v, list) else v) for k, v in form.items() if v])
+    while True:
+        validation = validate_form(form)
+        term.heading("CV preview")
+        _print_cv_preview(form, validation, confidence)
+        if not save:
+            if validation.ok:
+                term.ok("Looks good — nothing saved (check only).")
+            return None
+        if validation.ok:
+            break
+        if not yes and sys.stdin.isatty() and term.confirm("\nFix these in your editor now?"):
+            try:
+                form = term.edit_json(form, label="profile") or form
+            except ValueError as exc:
+                raise CliError(str(exc)) from exc
+            continue
+        raise CliError("Not saved: fix the errors above (re-run with --edit).")
 
-    if not term.confirm("\nSave as a new profile?", assume_yes=args.yes):
-        raise CliError("Not saved. The CV copy stays in data/cv/.")
-    p = cp.upsert_from_extraction(_form_to_fields(form), active=not args.inactive)
-    term.ok(f"Created profile #{p.id} (v{p.profile_version}){'' if args.inactive else ', active'}.")
+    active = store.load_active_profile()
+    if active is not None and not inactive:
+        question = (f"\nSave as a new profile and make it active? "
+                    f"(current #{active.id} {active.name} is kept, just deactivated)")
+    else:
+        question = "\nSave as a new profile?"
+    if not term.confirm(question, assume_yes=yes):
+        raise CliError("Not saved.")
+    p = cp.upsert_from_extraction(_form_to_fields(form), active=not inactive)
+    term.ok(f"Created profile #{p.id} (v{p.profile_version}){'' if inactive else ', active'}.")
+    return p
 
 
 def cmd_profile_edit(args) -> None:
@@ -1005,10 +1108,11 @@ def _load_cv_json(path: Path) -> Dict[str, Any]:
     if not isinstance(data, dict):
         raise CliError("JSON CV must be an object, e.g. "
                        '{"name": "Ada", "skills": ["Python", "SQL"], "experience": ["..."]}')
-    unknown = sorted(set(data) - set(CV_JSON_KEYS) - {"cv_path"})
+    from services.cv_validation import normalize_json_cv
+
+    form, unknown = normalize_json_cv(data)
     if unknown:
         term.warn(f"Ignoring unknown CV fields: {', '.join(unknown)}")
-    form = {k: data.get(k) for k in CV_JSON_KEYS if data.get(k) is not None}
     form["cv_path"] = str(path)
     return form
 
@@ -1025,17 +1129,15 @@ def cmd_cv(args) -> None:
     if not path.is_file():
         raise CliError(f"File not found: {path}")
     suffix = path.suffix.lower()
+    yes = bool(getattr(args, "yes", False))
+    edit = bool(getattr(args, "edit", False))
     if suffix == ".json":
-        from services import candidate_profile as cp
-
         if path.stat().st_size > MAX_CV_BYTES:
             raise CliError("File too large (max 15 MB).")
-        fields = _form_to_fields(_load_cv_json(path))
-        p = cp.upsert_from_extraction(fields, active=True)
-        term.ok(f"CV loaded from JSON: profile #{p.id} — {p.name} (v{p.profile_version}), active.")
+        _review_and_save(_load_cv_json(path), edit=edit, yes=yes)
     elif suffix in {".pdf", ".docx"}:
         cmd_profile_import(argparse.Namespace(
-            cv_file=str(path), edit=False, inactive=False, yes=True))
+            cv_file=str(path), edit=edit, inactive=False, yes=yes))
     else:
         raise CliError(f"Unsupported CV type {suffix or '(none)'}: use .pdf, .docx or .json.")
     term.info("Next: `quackers scan`")
@@ -1448,6 +1550,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="quackers",
         description="HireMeQuackers — local-first AI job-hunting agent.",
+        epilog="New here? Run `quackers guide`.",
+        suggest_on_error=True,
     )
     sub = p.add_subparsers(dest="command", metavar="<command>")
     sub.required = True
@@ -1473,6 +1577,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("cv", help="load your CV (PDF / DOCX / JSON), or show the current one")
     s.add_argument("path", nargs="?", help="CV file; omit to show the active CV")
+    s.add_argument("--edit", action="store_true", help="fix the extracted fields in $EDITOR first")
+    s.add_argument("-y", "--yes", action="store_true",
+                   help="don't ask before saving (validation errors still block)")
     s.set_defaults(func=cmd_cv)
 
     s = sub.add_parser("jobs", help="list discovered jobs")
@@ -1640,6 +1747,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
     s.set_defaults(func=cmd_reset)
 
+    from quackers import commands_extra
+
+    commands_extra.register(sub)
     return p
 
 

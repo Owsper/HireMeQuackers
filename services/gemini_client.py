@@ -260,6 +260,8 @@ class GeminiClient:
             "education_requirements": job.education_requirements,
             "experience_requirements": job.experience_requirements,
             "language_requirements": job.language_requirements,
+            "required_languages": getattr(job, "required_languages", []),
+            "description_language": getattr(job, "description_language", None),
             "description": ensure_clean_jd(job.description or ""),
         }
         user_prompt += "\n" + json.dumps(job_payload, indent=2)
@@ -380,9 +382,17 @@ def deterministic_score(profile: CandidateProfile, job: Job) -> Dict[str, Any]:
         else:
             edefit = "poor"
 
-    # language fit
+    # language fit — structured codes when the job has them (multilingual
+    # extraction), else the legacy free-text comparison.
     langfit = "great"
-    if job.language_requirements:
+    if getattr(job, "required_languages_json", None) is not None:
+        from services.multilingual import language_fit, profile_language_codes
+
+        langfit, _ = language_fit(job.required_languages,
+                                  profile_language_codes(profile.languages or []))
+        if langfit == "unknown":  # profile lists no languages: don't penalise
+            langfit = "good"
+    elif job.language_requirements:
         langs = {l.get("name", "") for l in profile.languages} if profile.languages else set()
         for req_lang in [
             r.lower().split()[0]

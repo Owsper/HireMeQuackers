@@ -84,6 +84,10 @@ def upsert_profile(
             profile.other_json = _j(other)
             changed = True
         if active is not None:
+            if active:
+                session.query(CandidateProfile).filter(
+                    CandidateProfile.id != profile.id, CandidateProfile.active.is_(True)
+                ).update({"active": False}, synchronize_session=False)
             profile.active = active
         # Only bump version on real content change
         if changed:

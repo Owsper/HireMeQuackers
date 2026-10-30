@@ -154,7 +154,11 @@ def test_cv_json_creates_active_profile(monkeypatch, tmp_path):
     cv = tmp_path / "cv.json"
     cv.write_text(json.dumps({"name": "Ada", "skills": ["Python", "SQL"],
                               "experience": ["Intern at X"], "hobby": "chess"}), encoding="utf-8")
-    cli.cmd_cv(cli.build_parser().parse_args(["cv", str(cv)]))
+    # Without -y a non-interactive run must NOT save (no silent overwrite).
+    with pytest.raises(cli.CliError, match="Not saved"):
+        cli.cmd_cv(cli.build_parser().parse_args(["cv", str(cv)]))
+    assert saved == {}
+    cli.cmd_cv(cli.build_parser().parse_args(["cv", str(cv), "-y"]))
     assert saved["active"] is True
     assert saved["fields"]["skills"] == ["Python", "SQL"]
     assert saved["fields"]["experience"] == [{"text": "Intern at X"}]

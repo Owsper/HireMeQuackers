@@ -154,6 +154,22 @@ class SearchConfig(BaseModel):
     # is bundled (EURES's machine-readable data lives behind the EURES JPY portal).
     eures_api_url: Optional[str] = None
 
+    # -- ATS job boards: "provider:board" entries, e.g. "ashby:linear",
+    # "workable:acme".  Unioned with boards auto-discovered into the
+    # source_registry table and each adapter's built-in defaults.
+    ats_boards: List[str] = Field(default_factory=list)
+
+    # -- multilingual discovery --
+    # Extra ISO 639-1 languages to search in, independent of location.
+    search_languages: List[str] = Field(default_factory=list)
+    # Add the local language(s) of each configured location (Berlin -> de).
+    auto_detect_local_language: bool = True
+    # Always keep English variants alongside local-language ones.
+    include_english: bool = True
+    # Optional hard restriction on the language a vacancy is *written* in.
+    # Empty = accept any language (the default; never penalised).
+    description_languages: List[str] = Field(default_factory=list)
+
     @field_validator("employment_types", mode="before")
     @classmethod
     def _coerce_types(cls, v: Any) -> List[EmploymentType]:
@@ -214,6 +230,11 @@ class SearchConfig(BaseModel):
             "enable_detail_extraction": self.enable_detail_extraction,
             "enable_social_discovery": self.enable_social_discovery,
             "per_domain_min_seconds": self.per_domain_min_seconds,
+            "ats_boards": sorted(set(self.ats_boards)),
+            "search_languages": sorted(set(self.search_languages)),
+            "auto_detect_local_language": self.auto_detect_local_language,
+            "include_english": self.include_english,
+            "description_languages": sorted(set(self.description_languages)),
         }
 
     def hash_config(self) -> str:

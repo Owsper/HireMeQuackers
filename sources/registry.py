@@ -68,6 +68,7 @@ def _eager_load() -> None:
         "sources.eures",
         "sources.career_pages",
         "sources.web_search",
+        "sources.ats_adapters",
     )
     import sys
 

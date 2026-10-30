@@ -16,6 +16,12 @@ google-genai>=1.0
 # Optional - CV PDF extraction
 PyMuPDF>=1.24
 
+# Optional (not installed by default) - OCR for scanned CV PDFs, runs locally.
+# Also needs the Tesseract program: https://github.com/UB-Mannheim/tesseract/wiki
+# pytesseract>=0.3
+# Optional (not installed by default) - better job-description language detection
+# langdetect>=1.0.9
+
 # Optional - browser automation (not installed by default)
 playwright>=1.40
 
