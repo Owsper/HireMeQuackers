@@ -220,7 +220,9 @@ def test_show_requires_job_id_and_export_csv(db):
 
 def test_guide_and_typo_suggestion(capsys):
     run(["guide"])
-    assert "quackers scan" in capsys.readouterr().out
+    # /guide shows interactive slash syntax only — no standalone `quackers` prefix.
+    out = capsys.readouterr().out
+    assert "/scan" in out and "quackers " not in out and "`quackers" not in out
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["scna"])
     assert "scan" in capsys.readouterr().err
