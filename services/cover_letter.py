@@ -6,7 +6,8 @@ from typing import Any, Dict, List, Optional
 
 from config.settings import get_config
 from database.models import CandidateProfile, GeneratedDocument, Job
-from services.gemini_client import GEMINI_SDK_AVAILABLE, _extract_text, GeminiClient
+from services import llm
+from services.ai_client import ensure_clean_jd
 from services.usage_tracking import record_usage
 
 
@@ -21,18 +22,18 @@ def generate_cover_letter(
     """
     env = get_config()
     # <Length constraint: ~200-400 words>
-    if env.enable_ai_direction and GEMINI_SDK_AVAILABLE and env.gemini_api_key:
-        try:
-            text = _generate_via_gemini(profile, job, match, tone)
-            if text and text.strip():
-                return text
-        except Exception:
-            pass
+    if env.enable_ai_direction:
+        ai = llm.get()
+        if ai.available:
+            try:
+                return _generate_via_ai(ai, profile, job, match, tone)
+            except llm.LLMError:
+                pass
     return _deterministic(profile, job, match, tone)
 
 
-def _generate_via_gemini(
-    profile: CandidateProfile, job: Job, match: Dict[str, Any], tone: str
+def _generate_via_ai(
+    ai: llm.LLM, profile: CandidateProfile, job: Job, match: Dict[str, Any], tone: str
 ) -> str:
     import json
 
@@ -51,7 +52,7 @@ def _generate_via_gemini(
             "location": job.location,
             "employment_type": job.employment_type,
             "workplace_arrangement": job.workplace_arrangement,
-            "description": (job.description or "")[:1200],
+            "description": ensure_clean_jd(job.description or "")[:1200],
             "required_skills": job.required_skills,
             "preferred_skills": job.preferred_skills,
             "language_requirements": job.language_requirements,
@@ -78,35 +79,7 @@ def _generate_via_gemini(
         "for:\n" + json.dumps(payload, ensure_ascii=False)
         + "\nReturn ONLY the cover letter text in Markdown (no backticks, no '```' fences)."
     )
-    client = GeminiClient()
-    gemini_client = client._genai_client()
-    try:
-        response = gemini_client.models.generate_content(
-            model=env_grid_model(),
-            contents=prompt,
-            system_instruction=system,
-            config={"response_mime_type": "text/plain"},
-        )
-    except TypeError:
-        try:
-            from google.genai import types  # type: ignore
-
-            cfg_obj = types.GenerateContentConfig(response_mime_type="text/plain")
-            response = gemini_client.models.generate_content(
-                model=env_grid_model(),
-                contents=prompt,
-                system_instruction=system,
-                config=cfg_obj,
-            )
-        except Exception:
-            return ""
-    return _extract_text(response) or ""
-
-
-def env_grid_model() -> str:
-    from config.settings import get_config
-
-    return get_config().gemini_model
+    return ai.complete(system, prompt).strip()
 
 
 def _deterministic(

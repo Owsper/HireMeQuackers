@@ -1,4 +1,5 @@
-"""Natural-language mode for the interactive shell, backed by Gemini.
+"""Natural-language mode for the interactive shell, backed by the configured
+AI provider (Gemini, OpenAI, Anthropic, Ollama, ... see `services.llm`).
 
 The model never touches the database directly: every tool call is turned
 into an ordinary `quackers` argv list and run through the same command
@@ -120,7 +121,7 @@ TOOLS: Dict[str, Tuple[str, Schema, ArgvBuilder]] = {
     "scan_for_jobs": (
         "Discover new jobs with the live search config. Takes from seconds to a few minutes.",
         _obj({
-            "no_ai": {"type": "boolean", "description": "Skip Gemini scoring (faster, no API quota)."},
+            "no_ai": {"type": "boolean", "description": "Skip AI scoring (faster, no API quota)."},
             "sources": {"type": "array", "items": {"type": "string"},
                         "description": "Only scan these source names (see list_sources)."},
             "titles": {"type": "array", "items": {"type": "string"},
@@ -212,72 +213,52 @@ def describe_call(name: str, args: Dict[str, Any]) -> str:
 
 
 class Agent:
-    """A Gemini chat session that can call `quackers` commands as tools."""
+    """An AI chat session that can call `quackers` commands as tools."""
 
     def __init__(self, execute: Callable[[List[str]], Tuple[bool, str]]):
+        from services import llm
+
         self._execute = execute
         self._chat = None
-        self._client = None
-        self.unavailable_reason: Optional[str] = None
-        from config.settings import get_config
-
-        cfg = get_config()
-        self.model = cfg.gemini_model
-        if not cfg.gemini_api_key:
-            self.unavailable_reason = "GEMINI_API_KEY is not set in .env"
-            return
-        try:
-            from google import genai
-        except ImportError:
-            self.unavailable_reason = "google-genai is not installed (pip install google-genai)"
-            return
-        self._client = genai.Client(api_key=cfg.gemini_api_key)
+        self._ai = llm.get()
+        self.model = self._ai.label
+        self.unavailable_reason: Optional[str] = self._ai.reason
 
     @property
     def available(self) -> bool:
-        return self._client is not None
+        return self._ai.available
 
     def reset(self) -> None:
         self._chat = None
 
-    def _new_chat(self):
-        from google.genai import types
-
-        decls = [
-            types.FunctionDeclaration(name=name, description=desc, parameters_json_schema=schema)
-            for name, (desc, schema, _) in TOOLS.items()
-        ]
-        config = types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            tools=[types.Tool(function_declarations=decls)],
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-        )
-        return self._client.chats.create(model=self.model, config=config)
-
     def ask(self, text: str, on_tool: Callable[[str], None]) -> str:
         """Send one user message; run tool calls until the model answers."""
-        from google.genai import types
-
         if not self.available:
-            raise RuntimeError(self.unavailable_reason or "Gemini unavailable")
+            raise RuntimeError(self.unavailable_reason or "AI unavailable")
         if self._chat is None:
-            self._chat = self._new_chat()
-        response = self._chat.send_message(text)
-        for _ in range(MAX_TOOL_ROUNDS):
-            calls = response.function_calls or []
-            if not calls:
-                return (response.text or "").strip()
-            parts = []
-            for call in calls:
-                args = dict(call.args or {})
-                on_tool(describe_call(call.name, args))
-                try:
-                    ok, output = self._execute(build_argv(call.name, args))
-                except ValueError as exc:
-                    ok, output = False, f"Invalid arguments: {exc}"
-                if len(output) > MAX_TOOL_OUTPUT:
-                    output = output[:MAX_TOOL_OUTPUT] + "\n…(truncated)"
-                parts.append(types.Part.from_function_response(
-                    name=call.name, response={"ok": ok, "output": output}))
-            response = self._chat.send_message(parts)
+            self._chat = self._ai.chat(SYSTEM_PROMPT, [(n, d, s) for n, (d, s, _) in TOOLS.items()])
+        # A tool call left without its result makes every later request invalid
+        # (Anthropic / OpenAI), so a turn that does not finish cleanly drops the chat.
+        try:
+            reply = self._chat.send(text)
+            for _ in range(MAX_TOOL_ROUNDS):
+                if not reply.calls:
+                    return reply.text.strip()
+                results = []
+                for call in reply.calls:
+                    on_tool(describe_call(call.name, call.args))
+                    try:
+                        ok, output = self._execute(build_argv(call.name, call.args))
+                    except ValueError as exc:
+                        ok, output = False, f"Invalid arguments: {exc}"
+                    except Exception as exc:  # noqa: BLE001 - the model gets the error, not the user
+                        ok, output = False, f"Command failed: {exc}"
+                    if len(output) > MAX_TOOL_OUTPUT:
+                        output = output[:MAX_TOOL_OUTPUT] + "\n…(truncated)"
+                    results.append((call, {"ok": ok, "output": output}))
+                reply = self._chat.send_results(results)
+        except BaseException:
+            self.reset()
+            raise
+        self.reset()
         return "(Stopped after too many tool calls. Try a more specific request.)"

@@ -31,12 +31,30 @@ class EnvVar(NamedTuple):
 # Only variables that the code actually reads AND uses (config/settings.py,
 # database/connection.py). Every one of them is optional.
 ENV_VARS: Tuple[EnvVar, ...] = (
-    EnvVar("GEMINI_API_KEY", "AI (Gemini)",
-           "Enables AI match scoring, cover letters and plain-text questions in `quackers`.",
+    EnvVar("AI_PROVIDER", "AI",
+           "auto, gemini, openai, anthropic, openrouter, groq or ollama. "
+           "auto = the first of Gemini, Anthropic, OpenAI, OpenRouter, Groq with a key.", "auto"),
+    EnvVar("AI_MODEL", "AI", "Model id for the chosen provider (empty = that provider's default)."),
+    EnvVar("GEMINI_API_KEY", "AI",
+           "Google Gemini key: AI match scoring, cover letters and plain-text questions in `quackers`.",
            secret=True, url="https://aistudio.google.com/apikey"),
-    EnvVar("GEMINI_MODEL", "AI (Gemini)", "Gemini model id.", "gemini-2.0-flash"),
-    EnvVar("ENABLE_AI_MATCHING", "AI (Gemini)", "Score jobs with Gemini during scans (true/false).", "true"),
-    EnvVar("ENABLE_AI_DIRECTION", "AI (Gemini)", "Let Gemini word CV-tailoring suggestions (true/false).", "false"),
+    EnvVar("GEMINI_MODEL", "AI", "Gemini model id (AI_MODEL wins when set).", "gemini-3.8-flash"),
+    EnvVar("OPENAI_API_KEY", "AI", "OpenAI key (default model gpt-6-luna).",
+           secret=True, url="https://platform.openai.com/api-keys"),
+    EnvVar("OPENAI_BASE_URL", "AI",
+           "Any OpenAI-compatible server for AI_PROVIDER=openai (LM Studio, vLLM, DeepSeek, ...). "
+           "Also set AI_MODEL; local servers need no key."),
+    EnvVar("ANTHROPIC_API_KEY", "AI", "Anthropic key for Claude (default model claude-opus-5-5).",
+           secret=True, url="https://console.anthropic.com/settings/keys"),
+    EnvVar("OPENROUTER_API_KEY", "AI", "OpenRouter key: one key for many models.",
+           secret=True, url="https://openrouter.ai/keys"),
+    EnvVar("GROQ_API_KEY", "AI", "Groq key (default model openai/gpt-oss-120b).",
+           secret=True, url="https://console.groq.com/keys"),
+    EnvVar("OLLAMA_BASE_URL", "AI", "Local Ollama server for AI_PROVIDER=ollama (no key, nothing leaves your PC).",
+           "http://localhost:11434/v1"),
+    EnvVar("ENABLE_AI_MATCHING", "AI", "Score jobs with the AI during scans (true/false).", "true"),
+    EnvVar("ENABLE_AI_DIRECTION", "AI",
+           "Let the AI write cover letters, CV suggestions and interview prep (true/false).", "false"),
     EnvVar("SEARCH_PROVIDER", "Web search", "Web-search backend: brave, exa or duckduckgo.", "brave"),
     EnvVar("BRAVE_SEARCH_API_KEY", "Web search",
            "Brave Search API key. Without it web search falls back to DuckDuckGo.",
@@ -69,7 +87,7 @@ def is_secret(name: str) -> bool:
 
 
 def template() -> str:
-    """Commented starter `.env` (also published as `.env.example`)."""
+    """Commented starter `.env`."""
     lines = [
         "# HireMeQuackers configuration",
         "# Edit with `quackers env`. This file holds secrets: never commit it.",

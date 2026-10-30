@@ -1,7 +1,7 @@
 """Hard-constraint filter tests: AI scores MUST NOT override deterministic
 title/location hard gates.
 
-These tests use a mocked GeminiClient that returns a very high AI score
+These tests use a mocked AIClient that returns a very high AI score
 (total_score=100) for a job in the WRONG location, and assert that the
 job is still excluded by the filter layer.
 """
@@ -137,7 +137,7 @@ class TestAIOverrideBlocked:
                                                                 monkeypatch):
         """A job in New York with a 100 AI score is still excluded
         when the user asked for Berlin."""
-        import services.gemini_client as gc
+        import services.ai_client as gc
 
         fake_result = {
             "total_score": 100,
@@ -160,7 +160,7 @@ class TestAIOverrideBlocked:
         def _fake_score(self, profile, job, **kw):
             return fake_result
 
-        monkeypatch.setattr(gc.GeminiClient, "score_job_fit", _fake_score)
+        monkeypatch.setattr(gc.AIClient, "score_job_fit", _fake_score)
 
         job = _make_job(db_session, title="Python Developer",
                         location="New York, US")
@@ -179,7 +179,7 @@ class TestAIOverrideBlocked:
                                                              db_session,
                                                              base_config,
                                                              monkeypatch):
-        import services.gemini_client as gc
+        import services.ai_client as gc
 
         fake_result = {
             "total_score": 100,
@@ -202,7 +202,7 @@ class TestAIOverrideBlocked:
         def _fake_score(self, profile, job, **kw):
             return fake_result
 
-        monkeypatch.setattr(gc.GeminiClient, "score_job_fit", _fake_score)
+        monkeypatch.setattr(gc.AIClient, "score_job_fit", _fake_score)
 
         job = _make_job(db_session, title="Marketing Manager",
                         location="Berlin, Germany")

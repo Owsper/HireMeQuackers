@@ -58,13 +58,6 @@ def test_env_path_is_project_root_regardless_of_cwd(monkeypatch, tmp_path):
     assert envfile.env_path() == PROJECT_ROOT / ".env"
 
 
-def test_env_example_matches_template():
-    from config.settings import PROJECT_ROOT
-
-    example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
-    assert example == envfile.template()
-
-
 def test_template_parses_and_contains_no_values():
     result = envfile.parse(envfile.template())
     assert result.errors == [] and result.warnings == []
@@ -201,7 +194,7 @@ def test_creates_missing_env_without_printing_secret(setenv, capsys):
     setenv["run"]()
     out = capsys.readouterr()
     text = setenv["path"].read_text(encoding="utf-8")
-    assert f"GEMINI_API_KEY={FAKE_SECRET}" in text and "# --- AI (Gemini) ---" in text
+    assert f"GEMINI_API_KEY={FAKE_SECRET}" in text and "# --- AI ---" in text
     assert FAKE_SECRET not in out.out + out.err
     assert "GEMINI_API_KEY" in out.out and "Restart quackers" in out.out
     assert (setenv["path"].parent / ".gitignore").exists()

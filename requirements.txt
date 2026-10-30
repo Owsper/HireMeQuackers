@@ -10,8 +10,10 @@ python-docx>=1.0
 reportlab>=4.0
 prompt_toolkit>=3.0
 
-# Optional - Gemini AI
+# Optional - AI providers (only the one you use is needed)
 google-genai>=1.0
+openai>=3.0
+anthropic>=2.3
 
 # Optional - CV PDF extraction
 PyMuPDF>=1.24

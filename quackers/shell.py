@@ -2,7 +2,7 @@
 
 - Lines starting with `/` run the normal CLI commands: `/scan`, `/jobs --new`,
   `/app set 12 shortlisted`, ... with tab completion and history.
-- Anything else is sent to Gemini (see `quackers.agent`), which answers and
+- Anything else is sent to the AI provider (see `quackers.agent`), which answers and
   calls the same commands as tools.
 """
 from __future__ import annotations
@@ -150,7 +150,7 @@ def print_help(tree: CommandTree, agent) -> None:
             "what applications need a follow-up this week?",
         ])
     else:
-        term.info(f"\nPlain-text questions need Gemini ({agent.unavailable_reason}).")
+        term.info(f"\nPlain-text questions need an AI provider ({agent.unavailable_reason}).")
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +258,7 @@ def handle_line(line: str, tree: CommandTree, agent) -> bool:
         term.error("Interrupted.")
         return True
     except Exception as exc:  # noqa: BLE001 - network / quota / SDK errors
-        term.error(f"Gemini error: {exc}")
+        term.error(f"AI error: {exc}")
         return True
     if answer:
         print()
