@@ -131,7 +131,7 @@ def test_deterministic_language_fit_uses_codes():
     import json
 
     from database.models import CandidateProfile
-    from services.gemini_client import deterministic_score
+    from services.ai_client import deterministic_score
 
     prof = CandidateProfile(name="Ada", languages_json=json.dumps([{"name": "English (C1)"}]),
                             skills_json="[]")
