@@ -212,13 +212,18 @@ def cmd_status(args) -> None:
 
 
 def cmd_ai_check(args) -> None:
-    from services.gemini_client import GeminiClient
+    from services import llm
+    from services.ai_client import AIClient
 
-    info = GeminiClient().health_check()
+    info = AIClient().health_check()
     term.heading("AI health")
     term.kv([(k, v) for k, v in info.items()])
+    term.heading("Providers")
+    term.table(llm.overview(), ["provider", "active", "key", "sdk", "default_model"],
+               headers={"default_model": "default model"})
+    term.info("Pick one with AI_PROVIDER and a model with AI_MODEL (`quackers env`).")
     if info.get("status") != "AI_HEALTH_OK":
-        term.warn("Gemini is not configured; deterministic scoring will be used.")
+        term.warn("No AI provider is ready; deterministic scoring will be used.")
 
 
 # ---------------------------------------------------------------------------
@@ -272,9 +277,13 @@ def _run_scan(cfg, *, evaluate: bool) -> Dict[str, Any]:
     def on_progress(done: int, message: str) -> None:
         term.info(f"  [{done}/{total}] {message}")
 
-    term.info(f"Scanning {total} source(s)" + ("" if evaluate else " (AI scoring off)") + "…")
+    from services import llm
+
+    ai = llm.get()
+    note = f" (AI scoring : {ai.label})" if evaluate and ai.available else ("" if evaluate else " (AI scoring off)")
+    term.info(f"Scanning {total} source(s){note}…")
     try:
-        summary = run_discovery(cfg, on_progress=on_progress, evaluate_with_gemini=evaluate)
+        summary = run_discovery(cfg, on_progress=on_progress, evaluate_with_ai=evaluate)
     except KeyboardInterrupt:
         raise CliError("Scan interrupted. Partial results may already be saved.")
     return summary.to_dict()
@@ -692,7 +701,7 @@ def _record_doc(job_id: int, doc_type: str, path: Path, profile, notes: str) -> 
 
 def cmd_docs_cv(args) -> None:
     from services.cv_tailoring import build_cv_tailoring_suggestions
-    from services.gemini_client import deterministic_score
+    from services.ai_client import deterministic_score
 
     profile = _require_active_profile()
     with store.with_session() as session:
@@ -717,7 +726,7 @@ def cmd_docs_cv(args) -> None:
 
 def cmd_docs_letter(args) -> None:
     from services.cover_letter import generate_cover_letter
-    from services.gemini_client import deterministic_score
+    from services.ai_client import deterministic_score
 
     profile = _require_active_profile()
     with store.with_session() as session:
@@ -1352,11 +1361,11 @@ def cmd_env(args) -> None:
         raise CliError(
             "`env` is interactive and needs a terminal. "
             f"To configure non-interactively, edit {envfile.env_path()} "
-            "(see .env.example for the available settings).")
+            "(the README lists every setting).")
 
     path = envfile.env_path()
     term.heading("Environment configuration")
-    term.info("  .env holds API keys and settings (Gemini, web search, storage).")
+    term.info("  .env holds API keys and settings (AI providers, web search, storage).")
     term.info("  It is read once at startup; your OS environment variables take precedence.")
     term.kv([("File", str(path))])
 
@@ -1453,14 +1462,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub.required = True
 
     s = sub.add_parser("status", help="overview: counts, last scan, recent jobs, follow-ups")
-    s.add_argument("--ai-check", action="store_true", help="also check Gemini configuration")
+    s.add_argument("--ai-check", action="store_true", help="also check the AI provider configuration")
     s.set_defaults(func=cmd_status)
 
-    s = sub.add_parser("ai-check", help="check whether Gemini is configured")
+    s = sub.add_parser("ai-check", help="show the active AI provider/model and every supported provider")
     s.set_defaults(func=cmd_ai_check)
 
     s = sub.add_parser("scan", help="discover new jobs with the live search config")
-    s.add_argument("--no-ai", action="store_true", help="skip Gemini scoring (deterministic only)")
+    s.add_argument("--no-ai", action="store_true", help="skip AI scoring (deterministic only)")
     s.add_argument("--source", action="append", metavar="NAME",
                    help="only scan this source (repeatable)")
     s.add_argument("--titles", metavar='"A, B"',

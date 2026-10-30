@@ -1,4 +1,4 @@
-"""Record every Gemini operation into `AiUsage`."""
+"""Record every AI operation into `AiUsage`."""
 from __future__ import annotations
 
 from typing import Optional

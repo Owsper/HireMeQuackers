@@ -1,13 +1,13 @@
 [project]
 name = "job-hunter"
 version = "1.0.0"
-description = "Local-first AI job-hunting agent (Python, Gemini, SQLite)"
+description = "Local-first AI job-hunting agent (Python, Gemini / OpenAI / Claude / Ollama, SQLite)"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
     { name = "HireMeQuackers" }
 ]
-keywords = ["jobs", "ai", "gemini", "sqlite", "cli", "recruitment"]
+keywords = ["jobs", "ai", "gemini", "openai", "claude", "ollama", "sqlite", "cli", "recruitment"]
 classifiers = [
     "Environment :: Console",
     "Intended Audience :: End Users/Desktop",
@@ -40,6 +40,17 @@ dev = [
 ]
 gemini = [
     "google-genai>=1",
+]
+openai = [
+    "openai>=3",
+]
+anthropic = [
+    "anthropic>=2.3",
+]
+ai = [
+    "google-genai>=1",
+    "openai>=3",
+    "anthropic>=2.3",
 ]
 pdf = [
     "PyMuPDF>=1",

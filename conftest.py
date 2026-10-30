@@ -32,6 +32,17 @@ def _prepare_test_db(tmp_path_factory):
     # leave file for inspection
 
 
+@pytest.fixture(autouse=True)
+def _no_real_ai(monkeypatch):
+    """Tests never reach a real AI provider, whatever keys this machine has."""
+    from config import settings
+
+    monkeypatch.setattr(settings, "_ENV_LOADED", True)
+    for name in ("AI_PROVIDER", "AI_MODEL", "GEMINI_API_KEY", "GEMINI_MODEL", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+                 "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "OLLAMA_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture(scope="session")
 def sql_engine(test_db_cleanup):
     """Provide one engine for the whole session bound to the test DB."""
@@ -180,7 +191,7 @@ def sample_score():
 
 @pytest.fixture
 def mocked_gemini():
-    """Patch GeminiClient.score_job_fit to deterministic output."""
+    """Patch AIClient.score_job_fit to deterministic output."""
     from database.models import Job, CandidateProfile
 
     def _mk_score(self: Any, profile: Any, job: Any, **kwargs: Any) -> Any:
@@ -198,10 +209,10 @@ def mocked_gemini():
             "confidence": "high",
         }
 
-    import services.gemini_client as gc
+    import services.ai_client as gc
 
     caller = mock.patch.object(
-        gc.GeminiClient, "score_job_fit", _mk_score
+        gc.AIClient, "score_job_fit", _mk_score
     )
     caller.start()
     try:

@@ -8,7 +8,8 @@ from config.settings import get_config
 from database import repository as db
 from database.models import Application, CandidateProfile, GeneratedDocument, Job
 from database.connection import get_engine, get_session
-from services.gemini_client import GEMINI_SDK_AVAILABLE, _extract_text, GeminiClient
+from services import llm
+from services.ai_client import ensure_clean_jd
 
 
 def create_application_row(job: Job) -> Application:
@@ -38,21 +39,24 @@ def interview_role_prep(
 ) -> List[Dict[str, str]]:
     """6-10 pairs: question -> candidate_response_expected.
 
-    Uses Gemini if available; else deterministic. `refine` (when provided)
+    Uses the AI provider if available; else deterministic. `refine` (when provided)
     asks for a harder round; NOT fabricating.
     """
     env = get_config()
-    if env.enable_ai_direction and GEMINI_SDK_AVAILABLE and env.gemini_api_key:
-        try:
-            qs = _interview_gemini(profile, job, match, refine)
-            if qs:
-                return qs
-        except Exception:
-            pass
+    if env.enable_ai_direction:
+        ai = llm.get()
+        if ai.available:
+            try:
+                qs = _interview_ai(ai, profile, job, match, refine)
+                if qs:
+                    return qs
+            except llm.LLMError:
+                pass
     return _interview_deterministic(profile, job, match, refine)
 
 
-def _interview_gemini(
+def _interview_ai(
+    ai: llm.LLM,
     profile: CandidateProfile,
     job: Job,
     match: Dict[str, Any],
@@ -61,15 +65,16 @@ def _interview_gemini(
     import json
 
     system = (
-        "You are a professional interviewer. Return ONLY a JSON array of 6-10 "
-        "objects with keys 'question' and 'candidate_response_expected'. "
+        'You are a professional interviewer. Return ONLY a JSON object {"questions": [...]} '
+        "with 6-10 objects that have keys 'question' and 'candidate_response_expected'. "
         "Every 'candidate_response_expected' must be grounded in the candidate "
         "profile (posts / projects / experience / education / skills). Do not "
         "invent metrics or employers."
     )
     prompt = json.dumps(
         {
-            "job": {"title": job.title, "company": job.company, "description": (job.description or "")[:1200]},
+            "job": {"title": job.title, "company": job.company,
+                    "description": ensure_clean_jd(job.description or "")[:1200]},
             "profile": {
                 "name": profile.name,
                 "skills": profile.skills,
@@ -85,52 +90,15 @@ def _interview_gemini(
             "refine": refine,
         }
     )
-    client = GeminiClient()
-    try:
-        c = client._genai_client()
-    except Exception:
-        return []
-    try:
-        response = c.models.generate_content(
-            model=env_model(),
-            contents=prompt,
-            system_instruction=system,
-            config={"response_mime_type": "application/json"},
-        )
-    except TypeError:
-        try:
-            from google.genai import types  # type: ignore
-
-            cfg_obj = types.GenerateContentConfig(response_mime_type="application/json")
-            response = c.models.generate_content(
-                model=env_model(),
-                contents=prompt,
-                system_instruction=system,
-                config=cfg_obj,
-            )
-        except Exception:
-            return []
-    text = _extract_text(response)
-    from services.gemini_client import _parse_json_loose
-
-    parsed = _parse_json_loose(text or "")
-    if isinstance(parsed, list):
-        out = []
-        for item in parsed:
-            if not isinstance(item, dict):
-                continue
-            q = str(item.get("question") or "").strip()
-            r = str(item.get("candidate_response_expected") or "").strip()
-            if q and r:
-                out.append({"question": q[:500], "candidate_response_expected": r[:700]})
-            if len(out) >= 10:
-                break
-        return out
-    return []
-
-
-def env_model() -> str:
-    return get_config().gemini_model
+    out = []
+    for item in llm.json_list(ai.complete(system, prompt, json_mode=True), "questions"):
+        q = str(item.get("question") or "").strip()
+        r = str(item.get("candidate_response_expected") or "").strip()
+        if q and r:
+            out.append({"question": q[:500], "candidate_response_expected": r[:700]})
+        if len(out) >= 10:
+            break
+    return out
 
 
 def _interview_deterministic(

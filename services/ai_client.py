@@ -1,5 +1,7 @@
-"""Gemini client (google-genai SDK). The SDK is treated as an optional dependency;
-when it is missing or the key is unset we fall back to a deterministic heuristic.
+"""Job-fit scoring through the configured AI provider (see services.llm).
+
+Without a provider, or when a model call fails, a deterministic heuristic
+scores the job instead.
 """
 from __future__ import annotations
 
@@ -7,21 +9,12 @@ import hashlib
 import json
 import math
 import re
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from config.settings import get_config
 from database.models import CandidateProfile, Job
-from database import repository as db
+from services import llm
 from services.cache import cache_get, cache_set, invalidate_profile_prefix
 from services.usage_tracking import record_usage
-
-try:
-    from google import genai  # type: ignore
-    GEMINI_SDK_AVAILABLE = True
-except Exception:
-    genai = None  # type: ignore
-    GEMINI_SDK_AVAILABLE = False
 
 
 SCORE_RESULT_FIELDS = (
@@ -87,40 +80,25 @@ def ensure_clean_jd(jd: str) -> str:
     return out.strip()
 
 
-class GeminiNotConfigured(RuntimeError):
-    pass
-
-
-class GeminiClient:
+class AIClient:
     def __init__(self):
-        self._cfg = get_config()
-        self._last_job: Optional[Job] = None
-        self._last_profile: Optional[CandidateProfile] = None
+        self._ai = llm.get()
+        self._failures = 0
 
     @property
     def is_configured(self) -> bool:
-        return bool(self._cfg.gemini_api_key and GEMINI_SDK_AVAILABLE)
-
-    def _genai_client(self):
-        if not GEMINI_SDK_AVAILABLE:
-            raise GeminiNotConfigured("Google GenAI SDK not installed")
-        if not self._cfg.gemini_api_key:
-            raise GeminiNotConfigured("GEMINI_API_KEY is not set")
-        return genai.Client(api_key=self._cfg.gemini_api_key)
+        return self._ai.available
 
     def score_job_fit(
         self, profile: CandidateProfile, job: Job
     ) -> Dict[str, Any]:
         """Return a `ScoreResult` dict.
 
-        If the client is not configured OR the model fails ->
+        If no provider is available OR the model fails ->
         deterministic fallback that sets `ai_model='deterministic-fallback'`.
+        Failed model calls are not cached, so the next scan retries the model.
         """
-        self._last_job = job
-        self._last_profile = profile
-
         cache_key = self._cache_key(profile, job)
-        cfg_hash = _scoring_hash()
         cached = cache_get(cache_key)
         if cached is not None:
             try:
@@ -129,7 +107,7 @@ class GeminiClient:
                 record_usage(
                     job_id=job.id,
                     operation="score",
-                    model=self._cfg.gemini_model,
+                    model=d.get("ai_model") or self._ai.label,
                     estimate_tokens=None,
                     cache_hit=True,
                     note="cache hit",
@@ -141,7 +119,6 @@ class GeminiClient:
         if not self.is_configured:
             result = deterministic_score(profile, job)
             result["cache_hit"] = False
-            result["ai_model"] = "deterministic-fallback"
             cache_set(cache_key, json.dumps(result, sort_keys=True))
             record_usage(
                 job_id=job.id,
@@ -155,14 +132,18 @@ class GeminiClient:
 
         try:
             result = self._call_model(profile, job)
+            result["cache_hit"] = False
+            cache_set(cache_key, json.dumps(result, sort_keys=True))
+            self._failures = 0
         except Exception as exc:
             # fall back on any model failure (quota, malformed response, ...)
             result = deterministic_score(profile, job)
             result["cache_hit"] = False
-            result["ai_model"] = "deterministic-fallback"
-            result.setdefault("notes", []).append(f"model_error: {_safe(exc)}")
-        result["cache_hit"] = False
-        cache_set(cache_key, json.dumps(result, sort_keys=True))
+            result["notes"].append(f"model_error: {_safe(exc)}")
+            self._failures += 1
+            if self._failures >= 2:
+                # provider looks down (quota, network, auth): rest of this scan goes deterministic
+                self._ai.reason = f"stopped after repeated errors : {_safe(exc)}"
         record_usage(
             job_id=job.id,
             operation="score",
@@ -174,15 +155,13 @@ class GeminiClient:
         return result
 
     def health_check(self) -> Dict[str, str]:
-        out = {
-            "sdk_available": "yes" if GEMINI_SDK_AVAILABLE else "no",
-            "key_present": "yes" if bool(self._cfg.gemini_api_key) else "no",
-            "model": self._cfg.gemini_model,
-            "status": "AI_HEALTH_OK"
-            if (GEMINI_SDK_AVAILABLE and bool(self._cfg.gemini_api_key))
-            else ("AI_HEALTH_NO_KEY" if not bool(self._cfg.gemini_api_key) else "AI_HEALTH_BAD_SDK"),
+        ai = self._ai
+        return {
+            "provider": ai.provider or "none",
+            "model": ai.model or "-",
+            "status": "AI_HEALTH_OK" if ai.available else "AI_HEALTH_OFF",
+            "detail": ai.reason or "configured (not contacted)",
         }
-        return out
 
     # ---- private ----
     def _cache_key(self, profile: CandidateProfile, job: Job) -> str:
@@ -194,25 +173,29 @@ class GeminiClient:
                 str(job.content_fingerprint or ""),
                 str(job.description or "")[:1500],
                 _scoring_hash(),
+                self._ai.label if self.is_configured else "deterministic",
             ]
         )
         return "score:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:64]
 
     def _call_model(self, profile: CandidateProfile, job: Job) -> Dict[str, Any]:
-        from pydantic import BaseModel, Field, field_validator
+        from pydantic import BaseModel, Field
+
+        Fit = Literal["great", "good", "poor", "bad"]
+        Compat = Literal["match", "mismatch", "unspecified"]
 
         class _ToolResultSchema(BaseModel):
-            total_score: float = Field(ge=0, le=100)
+            total_score: float = Field(ge=0, le=100, description="candidate fit, 0-100")
             must_have_skills_matched: List[str] = Field(default_factory=list)
             must_have_skills_missing: List[str] = Field(default_factory=list)
             preferred_skills_matched: List[str] = Field(default_factory=list)
-            experience_fit: str
-            education_fit: str
-            language_fit: str
-            location_fit: str
+            experience_fit: Fit
+            education_fit: Fit
+            language_fit: Fit
+            location_fit: Fit
             evidence: List[str]
             missing_recommendation: List[str]
-            confidence: str
+            confidence: Literal["high", "medium", "low"]
             # ---- New: structured search-relevance view -----------------
             # These are independent of the *candidate* fit (`total_score`):
             #   title_relevance            -- "exact" | "related" | "weak" | "none"
@@ -226,13 +209,13 @@ class GeminiClient:
             #                                  surface the top "relevant" jobs first
             #                                  in the UI; never overrides a hard
             #                                  deterministic filter rejection)
-            title_relevance: Optional[str] = None
-            location_compatibility: Optional[str] = None
-            skills_match: Optional[int] = None
-            seniority_compatibility: Optional[str] = None
-            employment_type_compatible: Optional[str] = None
-            verification_confidence: Optional[str] = None
-            search_relevance_score: Optional[int] = None
+            title_relevance: Optional[Literal["exact", "related", "weak", "none"]] = None
+            location_compatibility: Optional[Literal["match", "mismatch", "unverified"]] = None
+            skills_match: Optional[int] = Field(None, ge=0, le=100)
+            seniority_compatibility: Optional[Compat] = None
+            employment_type_compatible: Optional[Compat] = None
+            verification_confidence: Optional[Literal["high", "medium", "low"]] = None
+            search_relevance_score: Optional[int] = Field(None, ge=0, le=100)
 
         system_instructions = (
             "You are a professional fit scorer for job applicants. "
@@ -245,8 +228,10 @@ class GeminiClient:
         )
         user_prompt = (
             "Score the following candidate profile against this job posting.\n"
+            "Reply with ONLY a JSON object that follows this JSON schema:\n"
+            f"{json.dumps(_ToolResultSchema.model_json_schema())}\n"
             f"CANDIDATE_PROFILE_JSON:\n{json.dumps(profile_payload(profile), indent=2)}\n"
-            "JOB_TITLE:"
+            "JOB_POSTING_JSON:"
         )
         job_payload = {
             "title": job.title,
@@ -265,48 +250,15 @@ class GeminiClient:
         user_prompt += "\n" + json.dumps(job_payload, indent=2)
         user_prompt += "\nReturn ONLY JSON."
 
-        client = self._genai_client()
-        try:
-            response = client.models.generate_content(
-                model=self._cfg.gemini_model,
-                contents=user_prompt,
-                system_instruction=system_instructions,
-                config={
-                    "response_mime_type": "application/json",
-                    "response_schema": _ToolResultSchema.model_json_schema(),
-                },
-            )
-        except TypeError:
-            # SDK may accept response_schema differently; try tools approach
-            try:
-                from google.genai import types  # type: ignore
-
-                cfg_obj = types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                )
-                response = client.models.generate_content(
-                    model=self._cfg.gemini_model,
-                    contents=user_prompt,
-                    system_instruction=system_instructions,
-                    config=cfg_obj,
-                )
-            except Exception as exc:
-                raise RuntimeError(f"Gemini call failed: {_safe(exc)}") from exc
-
-        text = _extract_text(response)
-        if not text:
-            raise RuntimeError("Empty Gemini response")
-        data = _parse_json_loose(text)
-        if data is None:
-            raise RuntimeError("Gemini response is not valid JSON")
-        return normalize_score(data)
+        data = llm.parse_json(self._ai.complete(system_instructions, user_prompt, json_mode=True))
+        if not isinstance(data, dict) or "total_score" not in data:
+            raise llm.LLMError("model reply is not a score object")
+        return normalize_score(data, self._ai.label)
 
 
 def profile_payload(profile: CandidateProfile) -> Dict[str, Any]:
+    # name / email / phone are not needed to judge fit, so they never leave the machine here
     return {
-        "name": profile.name,
-        "email": profile.email or "",
-        "phone": profile.phone or "",
         "summary": profile.summary or "",
         "skills": profile.skills or [],
         "education": profile.education or [],
@@ -353,21 +305,14 @@ def deterministic_score(profile: CandidateProfile, job: Job) -> Dict[str, Any]:
         else:
             pref_missed.append(k)
 
-    # experience fit
-    efit = "bad"
-    if _contains(profile_skills := None, profile_skills, profile_text, swapped=None):
-        pass
-    # simple heuristic: has experience
+    # experience fit: any experience is good, a past internship is great
     has_experience = bool(profile.experience)
+    efit = "bad"
     if has_experience:
-        efit = "good" if _contains("intern" in (job.title or "").lower(), profile_skills, profile_text) else "good"
-        if any(("intern" in (x.get("title") or "").lower() for x in (profile.experience or []))):
+        efit = "good"
+        titles = [(x.get("title") or "") if isinstance(x, dict) else str(x) for x in profile.experience]
+        if any("intern" in t.lower() for t in titles):
             efit = "great"
-    elif any(
-        "intern" in (x.get("title") or "").lower()
-        for x in (profile.experience or [])
-    ):
-        efit = "great"
 
     # education fit
     edefit = "good"
@@ -454,7 +399,7 @@ def deterministic_score(profile: CandidateProfile, job: Job) -> Dict[str, Any]:
     }
 
 
-def _contains(needle, profile_skills, profile_text, swapped=None) -> bool:
+def _contains(needle, profile_skills, profile_text) -> bool:
     n = (needle or "").lower().strip()
     if not n:
         return False
@@ -525,76 +470,22 @@ def _estimate_tokens(profile: CandidateProfile, job: Job) -> int:
         return 0
 
 
-def _extract_text(response: Any) -> str:
-    # gemini SDK has a .text or .candidates[0].content.parts[0].text shape
-    try:
-        if hasattr(response, "text"):
-            return str(response.text)
-        cands = getattr(response, "candidates", None)
-        if not cands:
-            return ""
-        for c in cands:
-            content = getattr(c, "content", None)
-            if not content:
-                continue
-            for part in getattr(content, "parts", []) or []:
-                t = getattr(part, "text", None)
-                if t:
-                    return str(t)
-    except Exception:
-        return ""
-    return ""
-
-
-def _parse_json_loose(text: str):
-    """Try to parse JSON from a model response that may have fences or prose."""
-    try:
-        t = text.strip()
-        if t.startswith("```"):
-            t = re.sub(r"^```[a-z]*\s*", "", t).strip()
-            if t.endswith("```"):
-                t = t[: -3].strip()
-        obj = json.loads(t)
-        return obj if isinstance(obj, dict) else None
-    except json.JSONDecodeError:
-        pass
-    # Attempt to find the first balanced {...}
-    start = text.find("{")
-    while start != -1:
-        depth = 0
-        for i in range(start, len(text)):
-            ch = text[i]
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    candidate = text[start:i + 1]
-                    try:
-                        obj = json.loads(candidate)
-                        return obj if isinstance(obj, dict) else None
-                    except json.JSONDecodeError:
-                        break
-        start = text.find("{", start + 1)
-    return None
-
-
-def normalize_score(data: Dict[str, Any]) -> Dict[str, Any]:
+def normalize_score(data: Dict[str, Any], model: str = "") -> Dict[str, Any]:
     """Clamp + coerce fields and make sure `evidence` is a list[str]."""
     out = {
-        "total_score": int(_clamp01(data.get("total_score", 50)) * 100),
-        "must_have_skills_matched": [str(s).strip() for s in (data.get("must_have_skills_matched") or []) if s],
-        "must_have_skills_missing": [str(s).strip() for s in (data.get("must_have_skills_missing") or []) if s],
-        "preferred_skills_matched": [str(s).strip() for s in (data.get("preferred_skills_matched") or []) if s],
+        "total_score": _score100(data.get("total_score", 50)),
+        "must_have_skills_matched": [s.strip() for s in _strs(data.get("must_have_skills_matched")) if s.strip()],
+        "must_have_skills_missing": [s.strip() for s in _strs(data.get("must_have_skills_missing")) if s.strip()],
+        "preferred_skills_matched": [s.strip() for s in _strs(data.get("preferred_skills_matched")) if s.strip()],
         "experience_fit": str(data.get("experience_fit", "bad")).lower(),
         "education_fit": str(data.get("education_fit", "bad")).lower(),
         "language_fit": str(data.get("language_fit", "bad")).lower(),
         "location_fit": str(data.get("location_fit", "bad")).lower(),
-        "evidence": [str(e)[:300] for e in (data.get("evidence") or [])][:10],
-        "missing_recommendation": [str(m)[:300] for m in (data.get("missing_recommendation") or [])][:10],
+        "evidence": [e[:300] for e in _strs(data.get("evidence"))][:10],
+        "missing_recommendation": [m[:300] for m in _strs(data.get("missing_recommendation"))][:10],
         "confidence": str(data.get("confidence", "low")).lower(),
-        "ai_model": str(data.get("ai_model") or (get_config().gemini_model or "Gemini")).lower(),
-        "notes": [str(n) for n in (data.get("notes") or [])],
+        "ai_model": str(model or data.get("ai_model") or "unknown").lower(),
+        "notes": _strs(data.get("notes")),
         # ---- structured search-relevance view (independent of total_score) ----
         "title_relevance": _opt_str(data.get("title_relevance"), _TITLE_RELEVANCE_VALUES),
         "location_compatibility": _opt_str(data.get("location_compatibility"), _LOCATION_COMPATIBILITY_VALUES),
@@ -616,21 +507,24 @@ def normalize_score(data: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def _clamp01(v: Any) -> float:
+def _score100(v: Any) -> int:
+    """0..100 (the schema's only scale); junk -> 50."""
     try:
         x = float(v)
     except (TypeError, ValueError):
-        return 0.5
+        return 50
     if math.isnan(x):
-        return 0.5
-    if x < 0.0:
-        return 0.0
-    if x > 100.0:
-        return 1.0
-    # input could be 0..1 or 0..100; normalize
-    if x <= 1.0:
-        return x
-    return x / 100.0
+        return 50
+    return int(max(0.0, min(100.0, x)))
+
+
+def _strs(v: Any) -> List[str]:
+    # a lone string must not turn into a list of characters
+    if v is None:
+        return []
+    if isinstance(v, (list, tuple)):
+        return [str(x) for x in v if x is not None]
+    return [str(v)]
 
 
 def invalidate_on_profile_change(profile_version: int, profile_id: int) -> None:
