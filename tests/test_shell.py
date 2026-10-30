@@ -1,4 +1,4 @@
-"""Tests for the interactive `quackers` session and its Gemini agent."""
+"""Tests for the interactive `quackers` session and its AI agent."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -7,6 +7,7 @@ import pytest
 
 from quackers import agent as agent_mod
 from quackers import cli, shell
+from services import llm
 
 
 # ---- shell helpers --------------------------------------------------------
@@ -118,30 +119,38 @@ def test_every_tool_argv_parses_with_the_cli():
         assert callable(parsed.func), name
 
 
-# ---- agent loop with a fake Gemini chat --------------------------------------
+# ---- agent loop with a fake provider chat ------------------------------------
 
 
 class _FakeChat:
-    def __init__(self, responses):
-        self.responses = list(responses)
+    def __init__(self, replies):
+        self.replies = list(replies)
         self.sent = []
 
-    def send_message(self, message):
-        self.sent.append(message)
-        return self.responses.pop(0)
+    def send(self, text):
+        self.sent.append(text)
+        return self.replies.pop(0)
+
+    def send_results(self, results):
+        self.sent.append(results)
+        return self.replies.pop(0)
 
 
 def _call(name, **args):
-    return SimpleNamespace(name=name, args=args)
+    return llm.Call(f"call-{name}", name, args)
 
 
-def _fake_agent(execute, responses):
+def _reply(text="", *calls):
+    return llm.Reply(text, list(calls))
+
+
+def _fake_agent(execute, replies):
     agent = agent_mod.Agent.__new__(agent_mod.Agent)
     agent._execute = execute
-    agent._client = object()
+    agent._ai = SimpleNamespace(available=True)
     agent.unavailable_reason = None
     agent.model = "fake"
-    agent._chat = _FakeChat(responses)
+    agent._chat = _FakeChat(replies)
     return agent
 
 
@@ -153,8 +162,8 @@ def test_agent_runs_tool_calls_then_answers():
         return True, "id  title\n12  Data Intern"
 
     agent = _fake_agent(execute, [
-        SimpleNamespace(function_calls=[_call("list_jobs", new=True, limit=5)], text=None),
-        SimpleNamespace(function_calls=None, text="Best match: #12 Data Intern"),
+        _reply("", _call("list_jobs", new=True, limit=5)),
+        _reply("Best match: #12 Data Intern"),
     ])
     shown = []
     answer = agent.ask("show new jobs", shown.append)
@@ -165,21 +174,22 @@ def test_agent_runs_tool_calls_then_answers():
 
 def test_agent_reports_bad_tool_arguments_to_model():
     agent = _fake_agent(lambda argv: pytest.fail("must not execute invalid calls"), [
-        SimpleNamespace(function_calls=[_call("show_job", job_id="oops")], text=None),
-        SimpleNamespace(function_calls=None, text="Which job do you mean?"),
+        _reply("", _call("show_job", job_id="oops")),
+        _reply("Which job do you mean?"),
     ])
     assert agent.ask("show job oops", lambda _: None) == "Which job do you mean?"
-    reply = agent._chat.sent[1][0]
-    assert reply.function_response.response["ok"] is False
+    call, result = agent._chat.sent[1][0]
+    assert call.id == "call-show_job" and result["ok"] is False
 
 
 def test_agent_stops_after_too_many_rounds():
-    loop = SimpleNamespace(function_calls=[_call("get_status")], text=None)
+    loop = _reply("", _call("get_status"))
     agent = _fake_agent(lambda argv: (True, "ok"), [loop] * (agent_mod.MAX_TOOL_ROUNDS + 1))
     assert "too many tool calls" in agent.ask("loop", lambda _: None)
 
 
 def test_agent_unavailable_without_key(monkeypatch):
+    monkeypatch.setenv("AI_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_API_KEY", "")
     from config import settings
 
@@ -204,3 +214,32 @@ def test_scan_tool_passes_titles_and_locations():
 def test_scan_tool_passes_workplace_types():
     argv = agent_mod.build_argv("scan_for_jobs", {"titles": ["Dev"], "workplace_types": ["remote"]})
     assert argv == ["scan", "--titles", "Dev", "--type", "remote"]
+
+
+def test_agent_drops_chat_after_too_many_rounds():
+    loop = _reply("", _call("get_status"))
+    agent = _fake_agent(lambda argv: (True, "ok"), [loop] * (agent_mod.MAX_TOOL_ROUNDS + 1))
+    agent.ask("loop", lambda _: None)
+    assert agent._chat is None  # the unanswered tool call must not poison the next message
+
+
+def test_agent_reports_command_crash_to_model():
+    def execute(argv):
+        raise RuntimeError("database is locked")
+
+    agent = _fake_agent(execute, [_reply("", _call("get_status")), _reply("The database is busy.")])
+    assert agent.ask("status", lambda _: None) == "The database is busy."
+    call, result = agent._chat.sent[1][0]
+    assert result == {"ok": False, "output": "Command failed: database is locked"}
+
+
+def test_agent_drops_chat_when_provider_fails():
+    class _Broken:
+        def send(self, text):
+            raise RuntimeError("503")
+
+    agent = _fake_agent(lambda argv: (True, ""), [])
+    agent._chat = _Broken()
+    with pytest.raises(RuntimeError):
+        agent.ask("hi", lambda _: None)
+    assert agent._chat is None

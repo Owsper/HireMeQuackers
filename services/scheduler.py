@@ -30,14 +30,14 @@ class OnDemandScheduler:
     ) -> DiscoverySummary:
         """Run the full scan; return a high-level summary.
 
-        `evaluate_with_gemini=True` is the default; a missing API key or
-        the deterministic fallback in `gemini_client` keeps the app
+        `evaluate_with_ai=True` is the default; a missing API key or
+        the deterministic fallback in `ai_client` keeps the app
         runnable offline.
         """
         return run_discovery(
             cfg,
             on_progress=on_progress,
-            evaluate_with_gemini=True,
+            evaluate_with_ai=True,
         )
 
     def retry_failed(self, source_name: str) -> DiscoverySummary:

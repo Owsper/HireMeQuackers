@@ -56,8 +56,17 @@ class AppConfig(BaseModel):
     app_env: str = "local"
     log_level: str = "INFO"
 
+    # auto | gemini | openai | anthropic | openrouter | groq | ollama
+    ai_provider: str = "auto"
+    ai_model: str = ""
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = "gemini-3.8-flash"
+    openai_api_key: str = ""
+    openai_base_url: str = ""
+    anthropic_api_key: str = ""
+    openrouter_api_key: str = ""
+    groq_api_key: str = ""
+    ollama_base_url: str = "http://localhost:11434/v1"
     enable_ai_matching: bool = True
     enable_ai_direction: bool = False
 
@@ -121,8 +130,16 @@ def get_config() -> AppConfig:
     return AppConfig(
         app_env=_env("APP_ENV", "local"),
         log_level=_env("LOG_LEVEL", "INFO"),
+        ai_provider=_env("AI_PROVIDER", "auto"),
+        ai_model=_env("AI_MODEL", ""),
         gemini_api_key=_env("GEMINI_API_KEY", ""),
-        gemini_model=_env("GEMINI_MODEL", "gemini-2.0-flash"),
+        gemini_model=_env("GEMINI_MODEL", "gemini-3.8-flash"),
+        openai_api_key=_env("OPENAI_API_KEY", ""),
+        openai_base_url=_env("OPENAI_BASE_URL", ""),
+        anthropic_api_key=_env("ANTHROPIC_API_KEY", ""),
+        openrouter_api_key=_env("OPENROUTER_API_KEY", ""),
+        groq_api_key=_env("GROQ_API_KEY", ""),
+        ollama_base_url=_env("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
         enable_ai_matching=_env_bool("ENABLE_AI_MATCHING", True),
         enable_ai_direction=_env_bool("ENABLE_AI_DIRECTION", False),
         database_url=_env("DATABASE_URL", "sqlite:///./data/jobs.db"),

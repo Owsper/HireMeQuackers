@@ -1,6 +1,6 @@
 """CV / LinkedIn tailoring suggestions.
 
-If Gemini is available, produce structured `suggestions`. If not, produce
+If an AI provider is available, produce structured `suggestions`. If not, produce
 deterministic suggestions from overlap between `must_have_skills_missing` and
 profile content (skills, projects, experience text).
 """
@@ -12,7 +12,8 @@ from typing import Any, Dict, List, Optional
 
 from config.settings import get_config
 from database.models import CandidateProfile, GeneratedDocument, Job
-from services.gemini_client import GEMINI_SDK_AVAILABLE, _extract_text, _parse_json_loose
+from services import llm
+from services.ai_client import ensure_clean_jd
 from services.usage_tracking import record_usage
 
 
@@ -26,31 +27,28 @@ def build_cv_tailoring_suggestions(
     Only contain "reason" based on what is ACTUALLY present in the profile
     and job. Do not fabricate.
 
-    Optionally use Gemini for cleaner wording; otherwise deterministic
+    Optionally use the AI provider for cleaner wording; otherwise deterministic
     fallthroughs.
     '''
     env = get_config()
-    if env.enable_ai_direction and GEMINI_SDK_AVAILABLE and env.gemini_api_key:
-        try:
-            sugg = _gemini_direction(profile, job, match)
-            if sugg:
-                return sugg
-        except Exception as exc:
-            # deterministic fallback
-            pass
+    if env.enable_ai_direction:
+        ai = llm.get()
+        if ai.available:
+            try:
+                sugg = _ai_direction(ai, profile, job, match)
+                if sugg:
+                    return sugg
+            except llm.LLMError:
+                pass
     return _deterministic(profile, job, match)
 
 
-def _gemini_direction(
-    profile: CandidateProfile, job: Job, match: Dict[str, Any]
+def _ai_direction(
+    ai: llm.LLM, profile: CandidateProfile, job: Job, match: Dict[str, Any]
 ) -> List[Dict[str, str]]:
-    import json
-    import sys
-    from services.gemini_client import GeminiClient, ensure_clean_jd
-
     system_prompt = (
-        "You are a professional resume coach. Return ONLY JSON: a list of "
-        "objects with exactly these keys: field, action, reason. "
+        "You are a professional resume coach. Return ONLY JSON: an object "
+        '{"suggestions": [...]} whose items have exactly these keys: field, action, reason. '
         "Present 'field' from the enum: "
         "summary, experience, skills, projects, certifications, languages, "
         "achievements, linkedin_headline, linkedin_features. "
@@ -89,7 +87,7 @@ def _gemini_direction(
             "CANDIDATE_PROFILE": candidate,
             "JOB": job_payload,
             "INSTRUCTIONS": (
-                "Return a JSON-array of 5-12 objects; each with "
+                'Return {"suggestions": [...]} with 5-12 objects; each with '
                 "'field' in {summary, experience, skills, projects, certifications, "
                 "languages, achievements, linkedin_headline, linkedin_features}, "
                 "'action' (short imperative sentence), 'reason' (grounded). "
@@ -97,51 +95,21 @@ def _gemini_direction(
             ),
         }
     )
-    client = GeminiClient()
-    try:
-        call_client = client._genai_client()
-    except Exception:
-        return []
-    try:
-        response = call_client.models.generate_content(
-            model=get_config().gemini_model,
-            contents=prompt,
-            system_instruction=system_prompt,
-            config={"response_mime_type": "application/json"},
-        )
-    except TypeError:
-        try:
-            from google.genai import types  # type: ignore
-
-            cfg_obj = types.GenerateContentConfig(response_mime_type="application/json")
-            response = call_client.models.generate_content(
-                model=get_config().gemini_model,
-                contents=prompt,
-                system_instruction=system_prompt,
-                config=cfg_obj,
-            )
-        except Exception:
-            return []
-    text = _extract_text(response)
-    obj = _parse_json_loose(text or "")
-    if isinstance(obj, list):
-        out = []
-        allowed = {
-            "summary", "experience", "skills", "projects", "certifications",
-            "languages", "achievements", "linkedin_headline", "linkedin_features",
-        }
-        for item in obj:
-            if not isinstance(item, dict):
-                continue
-            f = str(item.get("field") or "").lower().strip()
-            action = str(item.get("action") or "").strip()
-            reason = str(item.get("reason") or "").strip()
-            if f in allowed and action and reason:
-                out.append({"field": f, "action": action[:220], "reason": reason[:260]})
-            if len(out) >= 12:
-                break
-        return out
-    return []
+    items = llm.json_list(ai.complete(system_prompt, prompt, json_mode=True), "suggestions")
+    out = []
+    allowed = {
+        "summary", "experience", "skills", "projects", "certifications",
+        "languages", "achievements", "linkedin_headline", "linkedin_features",
+    }
+    for item in items:
+        f = str(item.get("field") or "").lower().strip()
+        action = str(item.get("action") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+        if f in allowed and action and reason:
+            out.append({"field": f, "action": action[:220], "reason": reason[:260]})
+        if len(out) >= 12:
+            break
+    return out
 
 
 def _deterministic(

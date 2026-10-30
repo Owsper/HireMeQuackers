@@ -13,7 +13,6 @@ from database.models import CandidateProfile, Job, utcnow
 from config.search_intent import build_intent
 from services.deduplication import primary_hard_match, secondary_similarity
 from services.filters import apply_filters
-from services.gemini_client import GeminiClient
 from services.logger import get_logger
 from services.normalization import (
     canonical_url,
@@ -99,7 +98,7 @@ def run_discovery(
     cfg: SearchConfig,
     *,
     on_progress: Optional[Callable[[int, str], None]] = None,
-    evaluate_with_gemini: bool = True,
+    evaluate_with_ai: bool = True,
 ) -> DiscoverySummary:
     from datetime import datetime
     from config.settings import get_config
@@ -206,8 +205,8 @@ def run_discovery(
         except Exception:
             log.exception("enrichment step failed (non-fatal)")
 
-    # Step 4: (optional) Gemini evaluation
-    if evaluate_with_gemini:
+    # Step 4: (optional) AI evaluation
+    if evaluate_with_ai:
         profile = db.get_active_candidate_profile(session)
         if profile is not None:
             # Refresh jobs (session.commit lazy)

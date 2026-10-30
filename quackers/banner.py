@@ -1,7 +1,9 @@
 """ASCII-art banner shown when the interactive `quackers` session starts.
 
-The art is FIGlet's "standard" font with its default smushing rules,
-embedded as a constant so the project needs no figlet dependency.
+Font: FIGlet "ANSI Shadow" (blocky 3-D look), embedded as a constant so the
+project needs no figlet dependency. `render()` paints the face in bright
+cyan and any drop-shade row in dim cyan, giving the classic ANSI-Shadow
+"depth" feel in the terminal.
 """
 from __future__ import annotations
 
@@ -11,12 +13,21 @@ from quackers import term
 
 TITLE = "HireMeQuackers"
 
-ART: List[str] = [
-    r" _   _ _          __  __       ___                   _",
-    r"| | | (_)_ __ ___|  \/  | ___ / _ \ _   _  __ _  ___| | _____ _ __ ___",
-    r"| |_| | | '__/ _ \ |\/| |/ _ \ | | | | | |/ _` |/ __| |/ / _ \ '__/ __|",
-    r"|  _  | | | |  __/ |  | |  __/ |_| | |_| | (_| | (__|   <  __/ |  \__ \ ",
-    r"|_| |_|_|_|  \___|_|  |_|\___|\__\_\\__,_|\__,_|\___|_|\_\___|_|  |___/",
+# FIGlet stock font: ANSI Shadow. Five 7-char-tall glyph rows.
+ART: list[str] = [
+    r"██╗  ██╗██╗██████╗ ███████╗███╗   ███╗███████╗",
+    r"██║  ██║██║██╔══██╗██╔════╝████╗ ████║██╔════╝",
+    r"███████║██║██████╔╝█████╗  ██╔████╔██║█████╗  ",
+    r"██╔══██║██║██╔══██╗██╔══╝  ██║╚██╔╝██║██╔══╝  ",
+    r"██║  ██║██║██║  ██║███████╗██║ ╚═╝ ██║███████╗",
+    r"╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝╚══════╝",
+    r"",
+    r" ██████╗ ██╗   ██╗ █████╗  ██████╗██╗  ██╗███████╗██████╗ ███████╗",
+    r"██╔═══██╗██║   ██║██╔══██╗██╔════╝██║ ██╔╝██╔════╝██╔══██╗██╔════╝",
+    r"██║   ██║██║   ██║███████║██║     █████╔╝ █████╗  ██████╔╝███████╗",
+    r"██║▄▄ ██║██║   ██║██╔══██║██║     ██╔═██╗ ██╔══╝  ██╔══██╗╚════██║",
+    r"╚██████╔╝╚██████╔╝██║  ██║╚██████╗██║  ██╗███████╗██║  ██║███████║",
+    r" ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚══════╝",
 ]
 
 ART_WIDTH = max(len(line.rstrip()) for line in ART)
@@ -29,5 +40,5 @@ def render(width: int) -> List[str]:
     off (pipes, NO_COLOR, unsupported consoles).
     """
     if width < ART_WIDTH + 2:
-        return [term.style(TITLE, "bold", "cyan")]
-    return [term.style(line.rstrip(), "bold", "cyan") for line in ART]
+        return [term.style(TITLE, "bold", "bright_cyan")]
+    return [term.style(line.rstrip(), "bold", "bright_cyan") for line in ART]

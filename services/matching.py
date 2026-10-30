@@ -1,4 +1,4 @@
-"""Run Gemini scoring over eligible jobs; deterministic fallback if no model."""
+"""Run AI scoring over eligible jobs; deterministic fallback if no model."""
 from __future__ import annotations
 
 from typing import Optional
@@ -9,7 +9,7 @@ from config.settings import get_config
 from database import repository as db
 from database.connection import get_engine, get_session
 from database.models import CandidateProfile, Job
-from services.gemini_client import GeminiClient
+from services.ai_client import AIClient
 from services.logger import get_logger
 from services.title_relevance import classify_title
 from services.location_validation import parse_location, location_verdict
@@ -53,7 +53,7 @@ def evaluate_jobs(
     mismatch) are skipped — the AI call is never made for them, saving cost
     and preventing a high AI score from overriding a hard-filter rejection.
     """
-    client = GeminiClient()
+    client = AIClient()
     if not get_config().enable_ai_matching:
         log.info("AI matching disabled; skipping all %d jobs.", len(jobs))
         return []

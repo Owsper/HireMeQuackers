@@ -55,6 +55,7 @@ _COLOR = _color_enabled()
 _CODES = {
     "bold": "1", "dim": "2", "red": "31", "green": "32",
     "yellow": "33", "blue": "34", "cyan": "36",
+    "bright_cyan": "96",
 }
 
 

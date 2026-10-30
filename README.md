@@ -1,6 +1,6 @@
 # HireMeQuackers — Local-First AI Job-Hunting Agent
 
-HireMeQuackers is a local command-line application that discovers job and internship listings from multiple public sources, evaluates how well you fit each position using Google Gemini (optional), tailors your CV, generates cover letters, and tracks your application pipeline — all in a simple SQLite database on your machine.
+HireMeQuackers is a local command-line application that discovers job and internship listings from multiple public sources, evaluates how well you fit each position using the AI model of your choice (Gemini, OpenAI, Claude, OpenRouter, Groq or a local Ollama model — all optional), tailors your CV, generates cover letters, and tracks your application pipeline — all in a simple SQLite database on your machine.
 
 Everything runs from the `quackers` command in your terminal — no web server, nothing listening on the network.
 
@@ -59,7 +59,7 @@ The v2 max-coverage discovery engine (October 2026) replaces the original single
 
 | Key | Required? | What it enables |
 |---|---|---|
-| `GEMINI_API_KEY` | Optional | AI match scoring, tailored CV, and cover letter generation. Without it, deterministic scoring is used instead. |
+| `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `GROQ_API_KEY` | Optional (any one) | AI match scoring and the chat mode (plus AI-written cover letters and CV tips with `ENABLE_AI_DIRECTION=true`). A local Ollama model needs no key. Without any, deterministic scoring is used instead. See [Choosing an AI provider](#choosing-an-ai-provider). |
 | `BRAVE_SEARCH_API_KEY` | Optional | Improves web-search recall. Without it, the app falls back to DuckDuckGo automatically. |
 | `EURES_API_URL` | Optional | Enables the EURES EU public-sector source. Without it, the source shows as `Skipped`. |
 
@@ -96,8 +96,8 @@ py -m venv .venv
 pip install -r requirements.txt
 pip install -e .            # installs the `quackers` command
 
-# 5. Optional: install the Gemini SDK (for AI matching)
-pip install google-genai
+# 5. The AI SDKs (google-genai, openai, anthropic) come with requirements.txt.
+#    Only the one for your provider is needed: pip install google-genai | openai | anthropic
 
 # 6. Optional: install PDF extraction
 pip install PyMuPDF
@@ -121,8 +121,8 @@ source .venv/bin/activate
 pip install -r requirements.txt
 pip install -e .            # installs the `quackers` command
 
-# 5. Optional: install the Gemini SDK (for AI matching)
-pip install google-genai
+# 5. The AI SDKs (google-genai, openai, anthropic) come with requirements.txt.
+#    Only the one for your provider is needed: pip install google-genai | openai | anthropic
 
 # 6. Optional: install PDF extraction
 pip install PyMuPDF
@@ -151,15 +151,23 @@ variables changed — never their values. `[s]how settings` displays where each
 value comes from (`.env`, OS environment or default) with secrets hidden.
 Restart `quackers` afterwards: `.env` is read once at startup.
 
-You can also copy `.env.example` to `.env` and edit it by hand.
+You can also write `.env` by hand; the table below lists every setting.
 `.env` is git-ignored; never commit it.
 
 | Variable | Default | Description |
 |---|---|---|
-| `GEMINI_API_KEY` | *(empty)* | AI match scoring, cover letters and plain-text questions. Get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey). |
-| `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model id |
-| `ENABLE_AI_MATCHING` | `true` | Score jobs with Gemini during scans |
-| `ENABLE_AI_DIRECTION` | `false` | Let Gemini word CV-tailoring suggestions |
+| `AI_PROVIDER` | `auto` | `auto`, `gemini`, `openai`, `anthropic`, `openrouter`, `groq` or `ollama` (see [Choosing an AI provider](#choosing-an-ai-provider)) |
+| `AI_MODEL` | *(empty)* | Model id for the chosen provider; empty = that provider's default |
+| `GEMINI_API_KEY` | *(empty)* | Google Gemini key. Get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey). |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | Gemini model id (`AI_MODEL` wins when set) |
+| `OPENAI_API_KEY` | *(empty)* | OpenAI key ([platform.openai.com/api-keys](https://platform.openai.com/api-keys)) |
+| `OPENAI_BASE_URL` | *(empty)* | Any OpenAI-compatible server for `AI_PROVIDER=openai` (also set `AI_MODEL`; no key needed) |
+| `ANTHROPIC_API_KEY` | *(empty)* | Anthropic (Claude) key ([console.anthropic.com](https://console.anthropic.com/settings/keys)) |
+| `OPENROUTER_API_KEY` | *(empty)* | OpenRouter key ([openrouter.ai/keys](https://openrouter.ai/keys)) |
+| `GROQ_API_KEY` | *(empty)* | Groq key ([console.groq.com/keys](https://console.groq.com/keys)) |
+| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Local Ollama server for `AI_PROVIDER=ollama` |
+| `ENABLE_AI_MATCHING` | `true` | Score jobs with the AI during scans |
+| `ENABLE_AI_DIRECTION` | `false` | Let the AI write cover letters, CV suggestions and interview prep |
 | `SEARCH_PROVIDER` | `brave` | Web-search backend: `brave`, `exa` or `duckduckgo` |
 | `BRAVE_SEARCH_API_KEY` | *(empty)* | Brave Search API key ([brave.com/search/api](https://brave.com/search/api/)); without it web search falls back to DuckDuckGo |
 | `EXA_API_KEY` | *(empty)* | Exa API key, used when `SEARCH_PROVIDER=exa` |
@@ -171,10 +179,50 @@ You can also copy `.env.example` to `.env` and edit it by hand.
 
 Variables already set in your OS environment take precedence over `.env`.
 
-> **Gemini rate limit:** The Gemini free tier allows ~10 requests/hour and ~1,000/day.
-> `GEMINI_API_KEY` is an optional convenience: when calls hit a quota limit or the key
-> is missing, AI matching falls back silently to a deterministic (non-AI) score rather than raising.
+### Choosing an AI provider
+
+AI is optional. Put **one** key in `.env` and HireMeQuackers uses that provider for
+match scoring and the plain-text chat in `quackers`; set `ENABLE_AI_DIRECTION=true` to
+also let it write cover letters, CV suggestions and interview prep.
+With `AI_PROVIDER=auto` (the default) the first provider with a key wins, in this
+order: Gemini, Anthropic, OpenAI, OpenRouter, Groq. Set `AI_PROVIDER` to pick one
+explicitly and `AI_MODEL` to override its default model (it applies to whichever
+provider is active). `auto` also sees keys exported in your OS environment for other
+tools, so set `AI_PROVIDER` (or `ENABLE_AI_MATCHING=false`) if you want to control that.
+
+| `AI_PROVIDER` | Key | Default model | Notes |
+|---|---|---|---|
+| `gemini` | `GEMINI_API_KEY` | `gemini-3.8-flash` | Free tier available; `GEMINI_MODEL` still works |
+| `openai` | `OPENAI_API_KEY` | `gpt-6-luna` | For any OpenAI-compatible server (LM Studio, vLLM, DeepSeek, ...) set `OPENAI_BASE_URL` and `AI_MODEL`; local servers need no key |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-5-5` | `AI_MODEL=claude-haiku-5-5` is much cheaper for big scans |
+| `openrouter` | `OPENROUTER_API_KEY` | `openrouter/auto` | One key for many models, e.g. `AI_MODEL=anthropic/claude-sonnet-5-5` |
+| `groq` | `GROQ_API_KEY` | `openai/gpt-oss-120b` | Fast hosted open models |
+| `ollama` | none | `llama3.1` | Runs on your PC, nothing leaves the machine. `ollama pull llama3.1` first |
+
+Examples:
+
+```ini
+# Claude, cheap model for scans
+AI_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+AI_MODEL=claude-haiku-5-5
+
+# fully local
+AI_PROVIDER=ollama
+AI_MODEL=qwen3
+```
+
+Run `quackers ai-check` to see the active provider/model and the key + SDK
+status of every provider. `.env` is read at startup, so restart `quackers`
+after switching.
+
+> **Quotas and failures:** when a call fails (quota, network, malformed reply) or no
+> provider is configured, scoring falls back to a deterministic (non-AI) score instead
+> of raising. Failed calls are not cached, so the next scan tries the model again.
 > Discovery itself is unaffected either way.
+>
+> `gemini-2.0-flash`, the old default, was shut down by Google on 1 June 2026. If your
+> `.env` still says `GEMINI_MODEL=gemini-2.0-flash`, delete that line.
 
 The `data/` directory is created automatically on first launch and holds the
 SQLite database. The `output/` directory stores generated CVs and letters.
@@ -194,7 +242,7 @@ Claude Code:
 │   /help for commands · or just type          │
 │   profile: Ada Lovelace (v1)                 │
 │   jobs: 99 · last scan: 2026-10-29 09:26     │
-│   AI: on (gemini-2.0-flash)                  │
+│   AI: on (gemini:gemini-3.8-flash)           │
 ╰──────────────────────────────────────────────╯
 
 > find remote data internships and show the best 5
@@ -205,9 +253,9 @@ Claude Code:
 
 - Lines starting with `/` run commands: `/scan`, `/jobs --new`, `/job 12`,
   `/app set 12 shortlisted`, ... `Tab` completes command names, `↑` recalls history.
-- Anything else is sent to Gemini, which calls the same commands as tools and
-  answers in your language. This needs `GEMINI_API_KEY` in `.env`
-  (set `GEMINI_MODEL` to change the model); without it, `/commands` still work.
+- Anything else is sent to your AI provider, which calls the same commands as
+  tools and answers in your language. This needs one provider configured (see
+  [Choosing an AI provider](#choosing-an-ai-provider)); without it, `/commands` still work.
 - `/help` lists everything, `/clear` starts a new conversation, `/exit` or
   `Ctrl+C` twice quits.
 - For safety the AI cannot reset data, change profiles, open URLs or export
@@ -269,7 +317,7 @@ Every command prints help with `-h`, e.g. `quackers jobs -h`.
 2. **Worker pool.** Sources run in a bounded thread pool (5 workers, configurable via `SCAN_MAX_SOURCES`).
 3. **Normalisation + de-dup.** Listings are normalised and de-duplicated using strong keys (canonicalised URL, provider + job-ID). Loose title-similarity is used only to *flag* a potential duplicate — it does not discard any record.
 4. **Enrichment.** Newly stored web and career-page jobs are re-fetched (rate-limited, up to `ENRICHMENT_MAX_PER_SCAN` per scan, `ENRICHMENT_DELAY_SECONDS` between calls) to recover description, salary, employment type, and apply URL when the initial listing had none.
-5. **Matching.** Results are scored against your active CV profile using Gemini when available, or via the deterministic keyword/skill/education fallback when not.
+5. **Matching.** Results are scored against your active CV profile using the configured AI provider when available, or via the deterministic keyword/skill/education fallback when not.
 6. **Storage.** Records are written to SQLite immediately so a network hang mid-scan cannot lose data.
 
 > **Diagnosis after a scan:** `quackers scan` ends with a per-source table:
@@ -284,8 +332,8 @@ Every command prints help with `-h`, e.g. `quackers jobs -h`.
 | Command | What it does |
 |---|---|
 | `quackers status [--ai-check]` | Totals (jobs, new, shortlisted, prepared, applied, interviews), last scan, recent jobs, upcoming follow-ups. |
-| `quackers ai-check` | Shows whether the Gemini SDK and API key are configured. |
-| `quackers scan [--no-ai] [--source NAME]` | Runs a scan with the live search config. `--no-ai` skips Gemini scoring; `--source` limits the scan to one or more sources. |
+| `quackers ai-check` | Shows the active AI provider/model and the key + SDK status of every supported provider. |
+| `quackers scan [--no-ai] [--source NAME]` | Runs a scan with the live search config. `--no-ai` skips AI scoring; `--source` limits the scan to one or more sources. |
 | `quackers jobs [--new] [--min-score N] [--search TEXT] [--source S] [--sort score] [--why] [--limit N]` | Lists discovered jobs. `--why` explains why each job was included (title / location / source evidence). |
 | `quackers job ID` | Full details: facts, match breakdown, requirements, application state, documents, description. |
 | `quackers open ID [--apply]` | Opens the posting (or the application URL) in your browser. |
@@ -320,10 +368,11 @@ quackers profile import path/to/cv.pdf --edit
 5. Later changes: `quackers profile edit`. Each save with content changes
    increments the `profile_version` and invalidates cached AI evaluations tied
    to the old version.
-6. Run `quackers ai-check` to confirm Gemini is configured.
+6. Run `quackers ai-check` to confirm your AI provider is configured.
 
 > No CV content is uploaded to any external service except the minimum data
-> required for a Gemini API call when AI matching is enabled.
+> required for an AI call when AI matching is enabled (scoring never sends your
+> name, email or phone). With `AI_PROVIDER=ollama` nothing leaves your machine.
 
 ---
 
@@ -377,7 +426,7 @@ built-in daily scheduler; to scan periodically, schedule `quackers scan` with
 cron or Windows Task Scheduler.
 
 ```bash
-quackers scan              # with Gemini scoring when configured
+quackers scan              # with AI scoring when configured
 quackers scan --no-ai      # deterministic filters only (no API quota)
 quackers scan --source lever --source greenhouse
 ```
@@ -401,7 +450,7 @@ the per-source table.
 
 Match scores (0–100) are only generated when:
 - `ENABLE_AI_MATCHING=true` in `.env`, **and**
-- `GEMINI_API_KEY` is a real key, **and**
+- an AI provider is configured (`quackers ai-check` shows `AI_HEALTH_OK`), **and**
 - the scan ran without `--no-ai`.
 
 Without them, the deterministic fallback score is shown instead.
@@ -484,7 +533,8 @@ pytest
 Test files (created in `tests/`):
 - `test_database.py` — SQLite init, CRUD, deduplication
 - `test_deduplication.py` — hard + soft duplicate detection
-- `test_matching.py` — Gemini mock score validation
+- `test_matching.py` — AI mock score validation
+- `test_llm.py` — provider selection and every provider adapter (fake SDK clients, real SDK signatures)
 - `test_cv_tailoring.py` — CV tailoring output validation
 - `test_settings.py` — search config validation
 - `test_sources.py` — source adapters with mocked HTTP
@@ -495,7 +545,7 @@ Test files (created in `tests/`):
 - `test_web_search_provider.py` — web-search source provider integration
 - `test_dashboard_diagnostics.py` — per-source diagnostics status rows (`quackers scan`)
 - `test_cli.py` — command routing, config coercion, terminal-output sanitising
-- `test_shell.py` — interactive session, slash completion, Gemini tool loop (faked)
+- `test_shell.py` — interactive session, slash completion, AI tool loop (faked)
 - `test_setenv.py` — banner, `env` flows, .env parsing / atomic writes / precedence
 - `test_sources_new.py` — RemoteOK, HackerNews, EURES adapters
 - `test_feed_registry.py` — bundled RSS feed list
@@ -539,14 +589,14 @@ cp data/jobs.db.backup-20260101 data/jobs.db
 
 | Area | Limitation |
 |---|---|
-| **AI matching** | Requires a valid `GEMINI_API_KEY` and the `google-genai` package. Without them, jobs are discovered but scored using the deterministic keyword/skill/education fallback — no error is raised. |
+| **AI matching** | Requires one configured AI provider (its key and SDK, or a running Ollama). Without one, jobs are discovered but scored using the deterministic keyword/skill/education fallback — no error is raised. |
 | **Detail extraction** | Works on well-structured job pages. Title-only listings (e.g., some Hacker News job posts) are enriched only if the linked page has parseable content. `extraction_confidence` is reported per field so the CLI can tell you when data is uncertain. |
 | **Web search without Brave key** | DuckDuckGo can return HTTP 202 soft-fails on some queries. The source handles this gracefully but coverage is reduced compared to Brave. |
 | **EURES source** | Opt-in. EURES publishes machine-readable data behind the EURES Job Mobility Portal; no verified keyless public API endpoint is bundled. Set `EURES_API_URL` in `.env` if you have one. The source shows as `Skipped` (not `Failed`) when the URL is unset. |
 | **LinkedIn / X / Instagram** | Not included. These platforms require paid credentials and/or block automated access by default. Only public, keyless, or explicitly-authorized source types are bundled. |
 | **PDF export** | Requires `PyMuPDF` (`pip install PyMuPDF`). DOCX always works. |
 | **Application submission** | The app can prepare a CV and cover letter and record the application status in your pipeline, but it cannot fill in and submit forms on an external ATS. You must do that step manually. |
-| **Free tier** | Gemini free tier limits are ~10 req/hr and ~1 req/day per model (has changed). Set `ENABLE_AI_MATCHING=false` to avoid consuming quota. |
+| **AI quotas** | Free tiers (e.g. Gemini's) have low request limits that change often. Set `ENABLE_AI_MATCHING=false`, or use a local Ollama model, to avoid consuming quota. |
 
 ### Configuring additional sources
 
@@ -567,7 +617,7 @@ HireMeQuackers was designed with a conservative safety posture for a tool that o
 - **URL fetch safety** — `services/safe_requests.py` rejects `http://` loopback, private RFC 1918, link-local, and `file://` schemes. Only public `https://` URLs are fetched.
 - **Content sanitisation** — User-visible and user-uploaded content is sanitised (HTML stripped, tags removed) before being stored in SQLite, and terminal control characters / escape sequences are stripped from anything printed by the CLI.
 - **Robots.txt honoured for scoping** — `services/robots.py` is used to check whether a path is allowed for a specific crawl. It does not prevent pagination or repeated access to already-allowed paths.
-- **API key handling** — Google Gemini API key is sent only to `aistudio.google.com` endpoints. Brave Search key is sent only to `api.search.brave.com`. No other service receives your API keys.
+- **API key handling** — each AI key is sent only to its own provider's API (Google, OpenAI, Anthropic, OpenRouter, Groq); Ollama runs locally. Job-fit scoring requests never include your name, email or phone. Brave Search key is sent only to `api.search.brave.com`. No other service receives your API keys.
 - **No CAPTCHA or login bypass** — The application does not implement any bot/anti-bot work-around, and will not bypass paywalls, logins, or CAPTCHAs.
 - **SQLite single-process** — The DB uses a single connected process. Do not run two `quackers scan` commands at the same time, as this causes `database is locked` errors.
 
@@ -630,8 +680,8 @@ run two `quackers scan` commands simultaneously.
 
 ### Match score is 0 or blank
 - The job was scanned with `ENABLE_AI_MATCHING=false`, or
-- `google-genai` is not installed, or
-- Your `GEMINI_API_KEY` is the placeholder value.
+- the SDK for your AI provider is not installed, or
+- your AI key is missing or a placeholder (`quackers ai-check` shows which).
 Run a fresh scan with AI matching enabled after fixing any of the above.
 
 ---
@@ -674,8 +724,9 @@ HireMeQuackers/
 │   ├── normalization.py    # Raw listing → internal schema
 │   ├── deduplication.py    # Fingerprint + similarity-based dedupe
 │   ├── filters.py          # Deterministic keyword/location/employment filters
-│   ├── matching.py         # Gemini match scoring + fallback
-│   ├── gemini_client.py    # Gemini SDK wrapper + health check
+│   ├── matching.py         # AI match scoring + fallback
+│   ├── llm.py              # AI providers: Gemini, OpenAI, Anthropic, Ollama, ...
+│   ├── ai_client.py        # job-fit scoring + AI health check
 │   ├── candidate_profile.py # Profile CRUD + versioning
 │   ├── cv_parser.py        # PDF/DOCX → structured sections
 │   ├── cv_tailoring.py     # Generate job-specific CV content
@@ -690,7 +741,7 @@ HireMeQuackers/
 │   ├── robots.py           # robots.txt checking
 │   ├── sanitization.py     # HTML stripping, content sanitization
 │   ├── cache.py            # Evaluation result cache
-│   ├── usage_tracking.py   # Gemini API call counter
+│   ├── usage_tracking.py   # AI call counter
 │   └── logger.py           # Logging setup
 │
 ├── documents/
@@ -700,7 +751,7 @@ HireMeQuackers/
 ├── quackers/              # Command-line interface (`quackers`)
 │   ├── cli.py              # argparse commands: scan, jobs, job, app, docs, profile, config, ...
 │   ├── shell.py            # interactive session (`quackers` with no arguments)
-│   ├── agent.py            # Gemini natural-language mode (tools = CLI commands)
+│   ├── agent.py            # AI natural-language mode (tools = CLI commands)
 │   ├── banner.py           # ASCII-art banner for the interactive session
 │   ├── envfile.py          # .env template, validation and safe writes (`env` command)
 │   ├── store.py            # DB session + row-to-dict helpers used by the commands

@@ -5,7 +5,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from database import repository as db
 from database.models import CandidateProfile
-from services.gemini_client import invalidate_on_profile_change
+from services.ai_client import invalidate_on_profile_change
 
 
 def load_profile(profile_id: int) -> Optional[CandidateProfile]:
