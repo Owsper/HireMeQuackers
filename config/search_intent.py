@@ -209,6 +209,27 @@ _TITLE_SYNONYM_MAP: List[List[str]] = [
     ["product manager", "pm", "product"],
     ["technical writer", "technical writing", "docs writer"],
     ["research engineer", "research scientist", "research engineer intern"],
+    # ---- other industries (same discipline: only true equivalents) ----
+    ["nurse", "registered nurse", "staff nurse", "pflegefachkraft", "krankenpfleger",
+     "gesundheits- und krankenpfleger"],
+    ["warehouse worker", "warehouse associate", "warehouse operative", "picker packer",
+     "order picker", "lagerhelfer", "lagermitarbeiter", "lagerist"],
+    ["accountant", "staff accountant", "bookkeeper", "buchhalter", "finanzbuchhalter"],
+    ["marketing assistant", "marketing coordinator",
+     "marketingassistent"],
+    ["graphic designer", "visual designer", "grafikdesigner", "mediengestalter"],
+    ["sales assistant", "retail assistant", "shop assistant",
+     "verkäufer", "verkaufsberater"],
+    ["customer service representative", "customer service agent", "customer support agent",
+     "customer advisor", "kundenberater"],
+    ["administrative assistant", "office assistant", "office administrator",
+     "bürokaufmann", "bürokauffrau", "bürokraft"],
+    ["receptionist", "front desk agent", "front office agent", "rezeptionist"],
+    ["teacher", "lehrer", "lehrkraft", "educator"],
+    ["electrician", "elektriker", "elektroniker"],
+    ["delivery driver", "driver", "courier", "fahrer", "berufskraftfahrer"],
+    ["cook", "line cook", "koch"],
+    ["waiter", "waitress", "server", "kellner", "servicekraft"],
 ]
 
 

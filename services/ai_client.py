@@ -307,13 +307,26 @@ def deterministic_score(profile: CandidateProfile, job: Job) -> Dict[str, Any]:
         else:
             pref_missed.append(k)
 
-    # experience fit: any experience is good, a past internship is great
+    # Industry-neutral evidence when the posting lists no structured skills:
+    # the candidate's own skills that the description / requirements name.
+    job_text = " ".join(x for x in (job.title, job.description, job.experience_requirements,
+                                    job.education_requirements) if x).lower()
+    desc_matched = []
+    if not some_required:
+        desc_matched = [s for s in (profile.skills or [])
+                        if s and _term_in(s.lower().strip(), job_text)]
+
+    # experience fit: any experience is good; experience in the same kind of
+    # role (title words of the vacancy appear in past roles) or a past
+    # internship is great.
     has_experience = bool(profile.experience)
     efit = "bad"
+    relevant_experience = False
     if has_experience:
         efit = "good"
         titles = [(x.get("title") or "") if isinstance(x, dict) else str(x) for x in profile.experience]
-        if any("intern" in t.lower() for t in titles):
+        relevant_experience = _role_overlap(job.title or "", " ".join(titles))
+        if relevant_experience or any("intern" in t.lower() for t in titles):
             efit = "great"
 
     # education fit
@@ -362,6 +375,10 @@ def deterministic_score(profile: CandidateProfile, job: Job) -> Dict[str, Any]:
         base += 5 * min(len(matched), 3)
     if pref_matched:
         base += 2 * min(len(pref_matched), 3)
+    if desc_matched:
+        base += 4 * min(len(desc_matched), 3)
+    if relevant_experience:
+        base += 10
     if has_experience:
         base += 10
     if (job.location or "").lower() in profile_text:
@@ -407,6 +424,25 @@ def deterministic_score(profile: CandidateProfile, job: Job) -> Dict[str, Any]:
         "verification_confidence": "low",
         "search_relevance_score": None,
     }
+
+
+_ROLE_STOP = frozenset("""intern internship junior senior lead head trainee working student
+werkstudent praktikum graduate assistant associate the and for mit und für full time part""".split())
+
+
+def _term_in(term: str, text: str) -> bool:
+    return bool(term) and re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", text) is not None
+
+
+def _role_overlap(job_title: str, past_titles: str) -> bool:
+    """True when a meaningful word of the vacancy title (in its English
+    form, so "Pflegefachkraft" counts as "nurse") appears in past roles."""
+    from services.multilingual import canonicalize_title
+
+    words = {w for w in re.findall(r"[^\W\d_]{3,}", canonicalize_title(job_title))
+             if w not in _ROLE_STOP}
+    past = canonicalize_title(past_titles)
+    return any(_term_in(w, past) for w in words)
 
 
 def _contains(needle, profile_skills, profile_text) -> bool:

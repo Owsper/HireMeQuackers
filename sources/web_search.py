@@ -82,7 +82,7 @@ def _query_pairs(cfg: SearchConfig) -> List[tuple[str, str]]:
             if p and p.lower() not in {x.lower() for x in kws}:
                 kws.append(p)
     if not kws:
-        kws.append("Software Intern")
+        kws.append("jobs")  # no industry assumed when nothing was asked for
 
     locs: List[str] = []
     for loc in cfg.locations:

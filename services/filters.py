@@ -92,6 +92,11 @@ def _check_one(
     for k in [k.lower().strip() for k in (cfg.exclude_keywords or []) if k]:
         if k and k in descriptor:
             return None, f"excluded keyword: {k!r}"
+    # 2b) excluded titles: whole-word match on the title only (documented
+    # on SearchConfig.excluded_titles).
+    for t in [t.lower().strip() for t in (getattr(cfg, "excluded_titles", None) or []) if t]:
+        if re.search(r"(?<!\w)" + re.escape(t) + r"(?!\w)", (job.title or "").lower()):
+            return None, f"excluded title: {t!r}"
 
     # 3) TITLE RELEVANCE — new: strict gate, runs before the loose
     # keyword pass below.
@@ -99,6 +104,7 @@ def _check_one(
         # (handles title gate below)
         pass
     _title_gate_result = None  # tracked separately
+    _title_hard_pass = False  # exact/strong title match (incl. translation/synonym)
     if intent is not None and (intent.primary_title or intent.title_synonyms):
         from services.title_relevance import classify_title
         bare_title = (job.title or "").strip()
@@ -106,6 +112,7 @@ def _check_one(
         # Hard pass / soft pass / fallback — normalise to (ok, reason).
         if tr.passes_hard:
             _title_gate_result = ("pass", "")
+            _title_hard_pass = True
         elif tr.label == "related" and intent.include_related_titles:
             _title_gate_result = ("pass", "")
         else:
@@ -166,7 +173,13 @@ def _check_one(
     # 5) include keywords (kept loose: description-mention is allowed,
     # because the real title match is in step 3)
     if cfg.include_keywords:
-        if not any(k.lower().strip() in descriptor for k in cfg.include_keywords if k and k.strip()):
+        # A keyword that *is* the searched title is satisfied by a strict
+        # title match — "Pflegefachkraft" or "Warehouse Associate" never
+        # contain the literal word "Nurse" / "Warehouse Worker".
+        titles = {t.lower().strip() for t in (intent.all_titles() if intent is not None else [])}
+        if _title_hard_pass and any(k.lower().strip() in titles for k in cfg.include_keywords if k):
+            pass
+        elif not any(k.lower().strip() in descriptor for k in cfg.include_keywords if k and k.strip()):
             return None, "missing required keyword(s)"
     # 6) phrases
     if cfg.phrases:

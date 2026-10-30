@@ -47,7 +47,7 @@ LOCATION_LANGUAGES: Dict[str, tuple[str, ...]] = {
 }
 
 #: Level words handled separately from the role part of a title.
-_LEVELS = ("working student", "intern", "apprentice", "junior")
+_LEVELS = ("working student", "intern", "apprentice", "graduate", "junior")
 
 #: Canonical English term -> local equivalents (first = preferred in queries).
 TITLE_TERMS: Dict[str, Dict[str, tuple[str, ...]]] = {
@@ -61,6 +61,76 @@ TITLE_TERMS: Dict[str, Dict[str, tuple[str, ...]]] = {
     "apprentice": {
         "de": ("Ausbildung", "Auszubildender"), "fr": ("alternance", "apprenti"),
         "es": ("aprendiz",), "it": ("apprendista",),
+    },
+    "graduate": {
+        "de": ("Berufseinsteiger", "Absolvent"), "fr": ("jeune diplômé",),
+        "nl": ("starter",), "es": ("recién graduado",), "it": ("neolaureato",),
+        "pl": ("absolwent",), "pt": ("recém-formado",),
+    },
+    # ---- non-IT professions (industry-agnostic search) ----
+    "nurse": {
+        "de": ("Pflegefachkraft", "Krankenpfleger"), "fr": ("infirmier",),
+        "nl": ("verpleegkundige",), "es": ("enfermero",), "it": ("infermiere",),
+        "pl": ("pielęgniarka",), "pt": ("enfermeiro",), "ru": ("медсестра",),
+    },
+    "accountant": {
+        "de": ("Buchhalter",), "fr": ("comptable",), "nl": ("boekhouder",),
+        "es": ("contable",), "it": ("contabile",), "pl": ("księgowy",),
+        "pt": ("contador",), "ru": ("бухгалтер",),
+    },
+    "warehouse worker": {
+        "de": ("Lagerhelfer", "Lagermitarbeiter"), "fr": ("préparateur de commandes",),
+        "nl": ("magazijnmedewerker",), "es": ("mozo de almacén",), "it": ("magazziniere",),
+        "pl": ("magazynier",), "pt": ("operador de armazém",), "ru": ("кладовщик",),
+    },
+    "marketing assistant": {
+        "de": ("Marketingassistent",), "fr": ("assistant marketing",),
+        "nl": ("marketingassistent",), "es": ("asistente de marketing",),
+        "it": ("assistente marketing",), "pl": ("asystent marketingu",),
+        "pt": ("assistente de marketing",),
+    },
+    "graphic designer": {
+        "de": ("Grafikdesigner",), "fr": ("graphiste",), "nl": ("grafisch ontwerper",),
+        "es": ("diseñador gráfico",), "it": ("grafico",), "pt": ("designer gráfico",),
+        "ru": ("графический дизайнер",),
+    },
+    "sales assistant": {
+        "de": ("Verkäufer",), "fr": ("vendeur",), "nl": ("verkoopmedewerker",),
+        "es": ("dependiente",), "it": ("commesso",), "pl": ("sprzedawca",),
+        "pt": ("vendedor",), "ru": ("продавец",),
+    },
+    "customer service": {
+        "de": ("Kundenservice",), "fr": ("service client",), "nl": ("klantenservice",),
+        "es": ("atención al cliente",), "it": ("servizio clienti",),
+        "pl": ("obsługa klienta",), "pt": ("atendimento ao cliente",),
+    },
+    "administrative assistant": {
+        "de": ("Bürokraft", "Verwaltungsassistent"), "fr": ("assistant administratif",),
+        "nl": ("administratief medewerker",), "es": ("auxiliar administrativo",),
+        "it": ("assistente amministrativo",), "pt": ("assistente administrativo",),
+    },
+    "teacher": {
+        "de": ("Lehrer",), "fr": ("enseignant",), "nl": ("leraar",), "es": ("docente",),
+        "it": ("insegnante",), "pl": ("nauczyciel",), "ru": ("учитель",),
+    },
+    "electrician": {
+        "de": ("Elektriker",), "fr": ("électricien",), "nl": ("elektricien",),
+        "es": ("electricista",), "it": ("elettricista",), "pl": ("elektryk",),
+        "pt": ("eletricista",), "ru": ("электрик",),
+    },
+    "driver": {
+        "de": ("Fahrer", "Berufskraftfahrer"), "fr": ("chauffeur",), "nl": ("chauffeur",),
+        "es": ("conductor",), "it": ("autista",), "pl": ("kierowca",),
+        "pt": ("motorista",), "ru": ("водитель",),
+    },
+    "cook": {
+        "de": ("Koch",), "fr": ("cuisinier",), "nl": ("kok",), "es": ("cocinero",),
+        "it": ("cuoco",), "pl": ("kucharz",), "pt": ("cozinheiro",), "ru": ("повар",),
+    },
+    "waiter": {
+        "de": ("Servicekraft", "Kellner"), "fr": ("serveur",), "nl": ("bediening",),
+        "es": ("camarero",), "it": ("cameriere",), "pl": ("kelner",), "pt": ("garçom",),
+        "ru": ("официант",),
     },
     "software developer": {
         "de": ("Softwareentwickler",), "fr": ("développeur logiciel",),
@@ -124,8 +194,10 @@ LOCAL_TO_CANONICAL.update({
     "desarrollador": "developer", "sviluppatore": "developer",
     "becaria": "intern", "estagiária": "intern", "stażysta": "intern",
 })
-# "stage" is also an English word; only translate it with a role next to it.
-LOCAL_TO_CANONICAL.pop("stage", None)
+# Words that are also normal English (or other-sense) words are never
+# rewritten on their own.
+for _ambiguous in ("stage", "chauffeur", "starter", "grafico", "koch", "contador"):
+    LOCAL_TO_CANONICAL.pop(_ambiguous, None)
 
 #: Connector words that carry no meaning for title matching.
 _CONNECTORS_RE = re.compile(
@@ -241,9 +313,12 @@ def localized_titles(title: str, lang: str, *, limit: int = 2) -> List[str]:
     canon = canonicalize_title(title)
     if not canon:
         return []
-    level = next((lvl for lvl in _LEVELS[:3] if _word_in(lvl, canon)), None)
+    level = next((lvl for lvl in _LEVELS[:4] if _word_in(lvl, canon)), None)
+    if level is None and _word_in("internship", canon):
+        level = "intern"
     role = canon
-    for lvl in ("working student", "internship", "intern", "apprentice", "junior"):
+    for lvl in ("working student", "internship", "intern", "apprentice", "graduate",
+                "entry level", "junior", "jobs", "job"):
         role = re.sub(r"(?<!\w)" + lvl + r"(?!\w)", " ", role)
     role = re.sub(r"\s+", " ", role).strip()
 

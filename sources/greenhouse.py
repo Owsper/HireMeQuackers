@@ -175,17 +175,8 @@ class GreenhouseSource(JobSource):
 
     @staticmethod
     def _extract_skills(text_low: str) -> List[str]:
-        lex = (
-            "python,sql,pandas,numpy,javascript,typescript,react,aws,azure,"
-            "docker,kubernetes,git,django,fastapi,flask,pytorch,tensorflow,"
-            "spark,hadoop,salesforce,sap,tableau,excel,machine learning,"
-            "deep learning,classification,nlp,data analysis,data engineering,"
-            "data science,ETL,SQLite,MySQL,PostgreSQL,Cloud,API,REST,"
-            "GraphQL,Metabase,Airflow"
-        ).split(",")
-        found = []
-        for skill in lex:
-            skill = skill.strip().lower()
-            if skill and re.search(r"\b" + re.escape(skill) + r"\b", text_low):
-                found.append(skill)
-        return found
+        # Cross-industry vocabulary (services.skill_lexicon), so non-IT
+        # postings get their skills tagged too.
+        from services.skill_lexicon import extract_skills
+
+        return extract_skills(text_low)

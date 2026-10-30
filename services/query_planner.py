@@ -5,8 +5,9 @@ Given a ``SearchConfig`` (and optionally a candidate profile) the
 planner returns a sorted :class:`QuerySpec` list.  Queries are
 grouped into *families*:
 
-* ``role``        — exact role titles + synonyms (e.g. "software intern",
-                  "Praktikum Software" when German locations present)
+* ``role``        — the user's own titles / keywords / CV target roles in any
+                  industry ("Nurse", "Marketing Assistant intern",
+                  "Praktikum Marketing" when German locations present)
 * ``skill``       — skill × role / skill × position ("intern python")
 * ``location``    — location + remote / hybrid variants
 * ``ats``         — ATS/career-page search ("site:jobs.ashbyhq.com intern")
@@ -35,6 +36,8 @@ the scan diagnostics UI).
 """
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -49,17 +52,6 @@ _GERMAN_LOCATIONS: tuple[str, ...] = (
     "leipzig", "hannover", "nürnberg", "nuremberg",
     "aachen", "bochum", "bremen", "bonn",
 )
-
-# German language variants for common job-hunt keywords.
-#: We emit one query per (base, german) pair, *only* when at least
-#: one location looks German.  Kept small on purpose — the planner
-#: is not a translation service.
-_GERMAN_VARIANTS: list[tuple[str, str]] = [
-    ("software intern", "Praktikum Software"),
-    ("intern software", "Werkstudent Software"),
-    ("junior software engineer", "Ausbildung Software"),
-]
-
 
 @dataclass
 class QuerySpec:
@@ -101,6 +93,63 @@ def _has_german_location(locations: List[str]) -> bool:
     return False
 
 
+#: EmploymentType value -> level word appended to role queries.
+_LEVEL_WORDS: Dict[str, str] = {
+    "internship": "intern",
+    "working_student": "working student",
+    "graduate": "graduate",
+    "part_time": "part time",
+}
+_LEVEL_RE = re.compile(
+    r"(?<!\w)(?:intern(?:ship)?|trainee|apprentice\w*|working student|werkstudent\w*|"
+    r"praktik\w*|graduate|entry[- ]level|junior|azubi|ausbildung|stage|stagiaire|"
+    r"part[- ]time)(?!\w)", re.I)
+
+
+def _has_level_word(title: str) -> bool:
+    """True when the title already names a level ("Marketing Intern",
+    "Werkstudent Vertrieb", "Graduate Nurse", "Entry-level ...")."""
+    return bool(_LEVEL_RE.search(title or ""))
+
+
+def _level_words(cfg) -> List[str]:
+    """Level words for the configured employment types, in config order.
+    Empty when the user searches regular (full-time / any) jobs."""
+    types = [getattr(e, "value", e) for e in (getattr(cfg, "employment_types", None) or [])]
+    if len(types) >= 6:  # "all types" — the user did not restrict the level
+        return []
+    out: List[str] = []
+    for t in types:
+        word = _LEVEL_WORDS.get(t)
+        if word and word not in out:
+            out.append(word)
+    return out
+
+
+def _roles(cfg, profile: Any | None) -> List[str]:
+    """Job titles to search for: the user's titles and keywords first,
+    then target roles stored with the CV.  Never a built-in default."""
+    raw: List[str] = [getattr(cfg, "primary_title", "") or ""]
+    raw += list(getattr(cfg, "title_synonyms", None) or [])
+    raw += list(getattr(cfg, "include_keywords", None) or [])
+    other = getattr(profile, "other_json", None) if profile is not None else None
+    if isinstance(other, str):
+        try:
+            other = json.loads(other)
+        except ValueError:
+            other = None
+    if isinstance(other, dict):
+        for key in ("target_roles", "job_titles"):
+            val = other.get(key)
+            raw += val if isinstance(val, list) else ([val] if isinstance(val, str) else [])
+    out: List[str] = []
+    for r in raw:
+        r = " ".join(str(r or "").split())
+        if r and _lower(r) not in {_lower(x) for x in out}:
+            out.append(r)
+    return out
+
+
 def plan_queries(
     cfg: "SearchConfig",
     *,
@@ -131,15 +180,21 @@ def plan_queries(
     is_german = _has_german_location(cfg.locations)
     languages = search_languages(cfg)
 
-    # Collect skill/keyword candidates from cfg + profile.
+    # Industry-agnostic: every query is built from what the user asked for
+    # (titles / keywords / skills / companies) or from the CV — never from
+    # a built-in profession list.
+    roles = _roles(cfg, profile)
+    levels = _level_words(cfg)
+    level = levels[0] if levels else ""
+    entry_level = bool(levels)
     skills: list[str] = list(cfg.required_skills or [])
     for cs in (getattr(profile, "skills", None) or []):
-        if _lower(cs) not in { _lower(s) for s in skills }:
+        if _lower(cs) not in {_lower(s) for s in skills}:
             skills.append(cs)
-    kws: list[str] = []
-    for k in list(cfg.include_keywords or []):
-        if _lower(k) not in { _lower(x) for x in kws }:
-            kws.append(k)
+    # What to put in a query when the user gave no role at all
+    # ("any entry-level jobs in Berlin").
+    generic = [{"intern": "internship"}.get(lv, f"{lv} jobs") for lv in levels] or ["jobs"]
+    primary = roles[0] if roles else generic[0]
 
     def add(
         query: str,
@@ -149,7 +204,7 @@ def plan_queries(
         max_pages: int = max_pages_per_query,
         meta: Optional[Dict[str, Any]] = None,
     ) -> None:
-        q = (query or "").strip()
+        q = " ".join((query or "").split())
         if not q:
             return
         meta = dict(meta or {})
@@ -163,66 +218,72 @@ def plan_queries(
             meta=meta,
         ))
 
-    # ---------------------------------------------------------------- #
-    # Family 1: role + synonyms (priority 90)
-    # ---------------------------------------------------------------- #
-    # The "role" family is the single most-relevant family — the
-    # user specifically typed, or we infer from the profile, a set of
-    # job roles.  We always emit at least the bare 3-tuple.
-    base_role = "software intern"
-    for k in kws[:10]:
-        add(f"{k} intern", "role", 90, reason=f"keyword {k}")
-        if is_german:
-            add(f"Praktikum {k}", "role", 90, reason=f"German keyword {k}")
-            add(f"Werkstudent {k}", "role", 88, reason=f"German working-student {k}")
-    # Bare role variants.
-    add("software intern", "role", 95, reason="base role")
-    add("software engineering internship", "role", 90, reason="synonym")
-    add("summer intern software", "role", 85, reason="synonym")
-    add("junior software developer", "role", 85, reason="seniority synonym")
-    if is_german:
-        add("Praktikum Software", "role", 95, reason="German base role")
-        add("Werkstudent Software", "role", 90, reason="German working student")
-        add("Ausbildung Software", "role", 85, reason="German apprenticeship")
+    def with_level(role: str, lv: str) -> str:
+        """'Nurse' + 'intern' -> 'Nurse intern'; no duplicate level word."""
+        if not lv or _has_level_word(role):
+            return role
+        return f"{role} {lv}"
+
+    first_role = roles[0] if roles else ""
 
     # ---------------------------------------------------------------- #
-    # Family 2: skill × role (priority 70)
+    # Family 1: role titles (priority 95-85) — the user's own titles,
+    # with the requested level word ("intern", "working student", ...).
+    # ---------------------------------------------------------------- #
+    for i, role in enumerate(roles[:10]):
+        top = 95 if i == 0 else 90
+        add(role, "role", top, reason="requested title")
+        for j, lv in enumerate(levels[:2]):
+            add(with_level(role, lv), "role", top - 1 - j, reason=f"{role} ({lv})")
+        if is_german and entry_level and not _has_level_word(role):
+            add(f"Praktikum {role}", "role", 89, reason=f"German internship {role}")
+            add(f"Werkstudent {role}", "role", 88, reason=f"German working student {role}")
+    if not roles:
+        for i, g in enumerate(generic[:3]):
+            add(g, "role", 90 - i, reason="no title given — level only")
+        if is_german and entry_level:
+            add("Praktikum", "role", 88, reason="German internship (any field)")
+            add("Werkstudent", "role", 87, reason="German working student (any field)")
+            add("Berufseinsteiger", "role", 86, reason="German entry level (any field)")
+
+    # ---------------------------------------------------------------- #
+    # Family 2: skill / qualification x level (priority 75-70)
     # ---------------------------------------------------------------- #
     for s in skills[:15]:
-        add(f"intern {s}", "skill", 75, reason=f"skill {s}")
-        add(f"junior developer {s}", "skill", 70, reason=f"skill {s}")
-        if is_german:
+        add(f"{s} {level}" if level else f"{s} jobs", "skill", 75, reason=f"skill {s}")
+        if first_role:
+            add(f"{first_role} {s}", "skill", 70, reason=f"{first_role} + skill {s}")
+        if is_german and entry_level:
             add(f"Werkstudent {s}", "skill", 72, reason=f"German skill {s}")
 
     # ---------------------------------------------------------------- #
-    # Family 3: location + remote (priority 60)
+    # Family 3: location + remote (priority 68-60)
     # ---------------------------------------------------------------- #
     for loc in cfg.locations[:6]:
-        add(f"remote software intern {loc}", "location", 65)
-        add(f"intern {loc}", "location", 60)
-        if is_german:
-            add(f"Werkstudent {loc}", "location", 62)
+        add(f"{with_level(primary, level)} {loc}", "location", 65)
+        for role in roles[1:3]:
+            add(f"{role} {loc}", "location", 61)
+        if is_german and entry_level:
+            add(f"Werkstudent {first_role} {loc}", "location", 62)
     if cfg.worldwide_remote or cfg.include_remote:
-        add("remote software intern", "location", 68, reason="worldwide remote")
-        add("remote internship unlimited locations", "location", 60)
+        add(f"remote {with_level(primary, level)}", "location", 68, reason="remote")
+        add(f"remote {primary} worldwide", "location", 60)
 
     # ---------------------------------------------------------------- #
-    # Family 4: ATS / career page (priority 55-50)
+    # Family 4: ATS / career page (priority 55) — the same role on every
+    # ATS, so companies of every industry using these systems are found.
     # ---------------------------------------------------------------- #
-    # `site:` operator is *one signal* — we don't rely on it
-    # exclusively.  For each recognised ATS, we emit a query.
-    ats_roots: List[tuple[str, str, str]] = [
-        # (site_hint, display_name, job_path)
-        ("jobs.ashbyhq.com", "Ashby", "jobs"),
-        ("jobs.lever.co", "Lever", None),
-        ("boards.greenhouse.io", "Greenhouse", "jobs"),
-        ("apply.workable.com", "Workable", "positions"),
-        ("bamboohr.com", "BambooHR", "careers.json"),
+    ats_roots: List[tuple[str, str]] = [
+        ("jobs.ashbyhq.com", "Ashby"),
+        ("jobs.lever.co", "Lever"),
+        ("boards.greenhouse.io", "Greenhouse"),
+        ("apply.workable.com", "Workable"),
+        ("bamboohr.com", "BambooHR"),
     ]
-    for site, label, _ in ats_roots:
-        add(f"site:{site} intern", "ats", 55, reason=f"{label} ATS search")
-        if is_german:
-            add(f"site:{site} Praktikum", "ats", 55, reason=f"{label} ATS search (DE)")
+    for site, label in ats_roots:
+        add(f"site:{site} {with_level(primary, level)}", "ats", 55, reason=f"{label} ATS search")
+        if is_german and entry_level:
+            add(f"site:{site} Praktikum {first_role}", "ats", 55, reason=f"{label} ATS search (DE)")
 
     # ---------------------------------------------------------------- #
     # Family 4b: major job boards (priority 60-58) — publicly indexed
@@ -231,13 +292,11 @@ def plan_queries(
     # ---------------------------------------------------------------- #
     from services.platforms import boards_for_scan
 
-    board_role = (getattr(cfg, "primary_title", "") or "").strip() or (
-        f"{kws[0]} intern" if kws else base_role
-    )
+    board_role = with_level(primary, level) if roles else primary
     board_loc = cfg.locations[0] if cfg.locations else ""
     for i, board in enumerate(boards_for_scan(cfg.locations)):
         add(
-            f"site:{board.site} {board_role} {board_loc}".strip(),
+            f"site:{board.site} {board_role} {board_loc}",
             "jobboard", 60 - min(i, 2),
             reason=f"{board.label} indexed listings",
             meta={"platform": board.label},
@@ -248,10 +307,7 @@ def plan_queries(
     # language other than English — dictionary translations only, so an
     # unknown title produces no query instead of a bad guess.
     # ---------------------------------------------------------------- #
-    base_titles = [t for t in [getattr(cfg, "primary_title", "")]
-                   + list(getattr(cfg, "title_synonyms", []) or [])[:2] if (t or "").strip()]
-    if not base_titles:
-        base_titles = [f"{k} intern" for k in kws[:3]] or ["software developer intern"]
+    base_titles = [with_level(r, level) for r in roles[:3]] or generic[:1]
     for lang in languages:
         if lang == "en":
             continue
@@ -264,49 +320,36 @@ def plan_queries(
                         reason=f"{lang} title + location", meta={"lang": lang})
 
     # ---------------------------------------------------------------- #
-    # Family 5: informal / community wording (priority 45-40)
+    # Family 5: informal / community wording (priority 45)
     # ---------------------------------------------------------------- #
-    informal_phrases = [
-        "hiring software intern",
-        "looking for a developer intern",
-        "we are hiring intern",
-        "looking for a junior developer",
-        "founding engineer",
-        "first engineer",
-    ]
-    if is_german:
-        informal_phrases.extend([
-            "wir suchen praktikant",
-            "erkundig dich Praktikant",
-            "wir sind auf der suche nach",
-        ])
-    for p in informal_phrases:
+    for p in (f"hiring {primary}", f"we are hiring {primary}", f"looking for {primary}"):
         add(p, "informal", 45)
+    if is_german:
+        add(f"wir suchen {primary}", "informal", 45)
 
     # ---------------------------------------------------------------- #
     # Family 6: company career pages (priority 55)
     # ---------------------------------------------------------------- #
     for company in (cfg.company_names or [])[:10]:
         add(f"jobs at {company}", "company", 55, reason=company)
-        add(f"{company} intern", "company", 55, reason=f"{company} job")
+        add(f"{company} {with_level(primary, level)}", "company", 55, reason=f"{company} job")
 
     # ---------------------------------------------------------------- #
-    # Family 7: seniority / graduate (priority 50)
+    # Family 7: entry-level / graduate variants (priority 50) — only when
+    # the user searches at an entry level.
     # ---------------------------------------------------------------- #
-    add("graduate software internship", "seniority", 50)
-    add("entry level software engineer", "seniority", 48)
-    add("working student software", "seniority", 50)
-    if is_german:
-        add("Studentische Mitarbeitende", "seniority", 50)
+    if entry_level:
+        add(f"graduate {first_role or 'jobs'}", "seniority", 50)
+        add(f"entry level {first_role or 'jobs'}", "seniority", 48)
+        if is_german:
+            add(f"Berufseinsteiger {first_role}", "seniority", 50)
 
     # ---------------------------------------------------------------- #
-    # Family 8: recent (priority 30) — provider-dependent; many
-    # providers have `freshness` or similar.  We *always* emit this
-    # family so that a provider with recency support can use it.
+    # Family 8: recent (priority 30) — provider-dependent recency.
     # ---------------------------------------------------------------- #
-    add("software intern posted last week", "recent", 30)
-    if is_german:
-        add("Praktikum Software neu", "recent", 30)
+    add(f"{with_level(primary, level)} posted last week", "recent", 30)
+    if is_german and entry_level:
+        add(f"Praktikum {first_role} neu", "recent", 30)
 
     # ---------------------------------------------------------------- #
     # Sort by priority desc; truncate to max_queries.

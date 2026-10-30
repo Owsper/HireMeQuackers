@@ -112,8 +112,8 @@ def test_build_search_query_is_clean_string():
 
 def test_query_pairs_respects_max_queries():
     """_query_pairs caps pairs at MAX_QUERIES (8) and falls back
-    to (Software Intern, "") when both keywords and locations
-    are empty."""
+    to ("jobs", "") when both keywords and locations are empty
+    (no industry is assumed)."""
     from sources.web_search import _query_pairs, MAX_QUERIES
     cfg = SearchConfig(
         include_keywords=[f"kw{i}" for i in range(50)],
@@ -123,10 +123,10 @@ def test_query_pairs_respects_max_queries():
     assert len(pairs) == MAX_QUERIES, f"expected {MAX_QUERIES} pairs, got {len(pairs)}"
     for kw, loc in pairs:
         assert isinstance(kw, str) and isinstance(loc, str)
-    # fallback: no keywords, no locations → single (Software Intern, "") pair
+    # fallback: no keywords, no locations → single neutral ("jobs", "") pair
     pairs2 = _query_pairs(SearchConfig())
     assert len(pairs2) == 1
-    assert pairs2[0] == ("Software Intern", "")
+    assert pairs2[0] == ("jobs", "")
 
 
 def test_scan_returns_clean_failure_when_no_pairs():

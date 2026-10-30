@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List
@@ -42,10 +43,11 @@ GUIDE = [
         ("quackers cv my_cv.pdf", "load your CV — preview + confirmation before saving"),
         ("quackers cv-template", "PDF unreadable? fill a JSON CV in your editor instead"),
         ('quackers config set locations="Berlin, Munich" include_remote=true', "where to search"),
-        ("quackers config set search_languages=de,en", "extra search languages"),
+        ("quackers lang de fr", "also search job titles in German + French (/lang)"),
         ("quackers config set description_languages=en", "only jobs written in these languages"),
     ]),
     ("2. Find jobs", [
+        ('quackers search Nurse in Berlin', "any profession, one-off (also: Any entry-level jobs in Berlin)"),
         ("quackers scan", "search all sources (ATS boards, job boards, feeds, web search)"),
         ("quackers jobs --new --sort score", "what's new, best matches first"),
         ("quackers job 12", "one job: details, match, description"),
@@ -400,9 +402,161 @@ def cmd_export(args) -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# search "<title> in <place>" (any industry) / lang
+# ---------------------------------------------------------------------------
+
+#: Words that only say "any job" — removed when deciding if a title was given.
+_ANY_WORDS = re.compile(r"(?<!\w)(?:any|all|some|jobs?|positions?|roles?|vacanc(?:y|ies)|"
+                        r"openings?|stellen|stellenangebote)(?!\w)", re.I)
+#: Level words in a request -> employment types to keep.
+_LEVEL_TYPES = (
+    (re.compile(r"(?<!\w)(?:working students?|werkstudent\w*)(?!\w)", re.I), ["working_student"]),
+    (re.compile(r"(?<!\w)(?:intern(?:ship)?s?|praktik\w*|trainee|stage|stagiaire)(?!\w)", re.I),
+     ["internship"]),
+    (re.compile(r"(?<!\w)(?:entry[- ]level|graduates?|berufseinsteiger\w*|absolvent\w*|"
+                r"new grad)(?!\w)", re.I),
+     ["graduate", "internship", "working_student", "other"]),
+    (re.compile(r"(?<!\w)(?:part[- ]time|teilzeit|minijob)(?!\w)", re.I), ["part_time"]),
+)
+
+
+#: Titles never shown for an "any entry-level jobs" search.
+ENTRY_LEVEL_EXCLUDED_TITLES = ("senior", "sr", "lead", "head of", "principal", "director",
+                               "chief", "vp", "leiter", "leiterin", "teamleiter")
+
+
+def parse_search_request(text: str) -> Dict[str, Any]:
+    """"Warehouse Worker in Germany" -> title / locations / employment types.
+
+    Works for any profession; nothing is assumed about the industry.  A
+    request without a real title ("Any entry-level jobs in Berlin") gives
+    an empty title, so no title filter is applied.
+    """
+    t = " ".join((text or "").split()).strip(" .")
+    remote = bool(re.search(r"(?<!\w)remote(?!\w)", t, re.I))
+    t = re.sub(r"(?<!\w)(?:fully )?remote(?!\w)", " ", t, flags=re.I)
+    locations: List[str] = []
+    m = re.match(r"^(.*?)\s+(?:in|near|bei|at)\s+(.+)$", t, re.I)
+    if m and m.group(2).strip():
+        t = m.group(1)
+        locations = [x.strip() for x in re.split(r"\s*(?:,|/|\bor\b|\band\b)\s*", m.group(2))
+                     if x.strip()]
+    types: List[str] = []
+    for rx, kinds in _LEVEL_TYPES:
+        if rx.search(t):
+            types += [k for k in kinds if k not in types]
+    title = " ".join(t.split()).strip(" ,-")
+    bare = " ".join(_ANY_WORDS.sub(" ", title).split())
+    level_only = not bare or bool(re.fullmatch(
+        r"(?:entry[- ]level|graduates?|intern(?:ship)?s?|working students?|part[- ]time|"
+        r"praktik\w*|werkstudent\w*|berufseinsteiger\w*|trainee)", bare, re.I))
+    return {
+        "title": "" if level_only else title,
+        "level_only_query": bare if level_only else "",
+        "locations": locations,
+        "employment_types": types,  # [] = any level
+        "remote": remote,
+    }
+
+
+def cmd_search(args) -> None:
+    """One-off search for any profession: `quackers search Nurse in Berlin`."""
+    from config.search_config import EmploymentType
+
+    cli = _cli()
+    raw = " ".join(args.request)
+    req = parse_search_request(raw)
+    if not (req["title"] or req["employment_types"]
+            or re.search(r"(?<!\w)(?:any|all)(?!\w)", raw, re.I)):
+        raise cli.CliError('Say what to look for, e.g. quackers search "Accountant in London"')
+    cfg = cli.load_config()
+    if not req["locations"] and not req["remote"] and not cfg.locations:
+        raise cli.CliError('Where? e.g. quackers search "Nurse in Berlin" (or add "remote")')
+    titles = [req["title"]] if req["title"] else []
+    workplace = ["include_remote"] if req["remote"] else []
+    if not titles:
+        # No title: no title gate and no keyword left over from the saved config.
+        cfg.primary_title, cfg.title_synonyms, cfg.include_keywords = "", [], []
+    cfg = cli.apply_scan_overrides(cfg, titles, req["locations"], workplace)
+    if titles:
+        cfg.include_keywords = titles  # not the saved config's (maybe IT) keywords
+    # The level the user typed decides the employment types; no level means
+    # every type (a "Nurse" search must not be limited to internships).
+    cfg.employment_types = ([EmploymentType(t) for t in req["employment_types"]]
+                            or list(EmploymentType))
+    if req["level_only_query"] and "graduate" in req["employment_types"]:
+        # "Any entry-level jobs": every field, but not senior roles.
+        cfg.excluded_titles = list(dict.fromkeys(
+            [*cfg.excluded_titles, *ENTRY_LEVEL_EXCLUDED_TITLES]))
+    if args.source:
+        cfg.enabled_sources = list(args.source)
+    what = req["title"] or " ".join(f"any {req['level_only_query']} job".split())
+    term.info(f"Searching: {what}"
+              f"{' in ' + ', '.join(cfg.locations) if cfg.locations else ''}"
+              f"{' (remote)' if req['remote'] else ''} · languages: "
+              f"{', '.join(_search_langs(cfg))}")
+    result = cli._run_scan(cfg, evaluate=not args.no_ai)
+    cli._print_scan_result(result)
+    if result.get("status") == "error":
+        raise cli.CliError("Search finished with errors (see above).")
+
+
+def _search_langs(cfg) -> List[str]:
+    from services.multilingual import search_languages
+
+    return search_languages(cfg)
+
+
+def cmd_lang(args) -> None:
+    """Show or set the languages job titles are searched in (`/lang de fr`)."""
+    from services.multilingual import SUPPORTED
+
+    cli = _cli()
+    cfg = cli.load_config()
+    changed = False
+    if args.languages:
+        codes = [c.strip().lower() for c in re.split(r"[,\s]+", " ".join(args.languages)) if c.strip()]
+        if codes == ["auto"]:
+            codes = []
+        bad = [c for c in codes if c not in SUPPORTED]
+        if bad:
+            raise cli.CliError(f"Unknown language(s) {', '.join(bad)}. Supported: {', '.join(SUPPORTED)}")
+        cfg.search_languages = codes
+        changed = True
+    if args.no_english is not None:
+        cfg.include_english = not args.no_english
+        changed = True
+    if changed:
+        cli._save_config(cfg)
+        term.ok("Search languages saved.")
+    term.kv([
+        ("Searching in", ", ".join(_search_langs(cfg))),
+        ("Extra languages", ", ".join(cfg.search_languages) or "none (English + local only)"),
+        ("Local language of locations", "yes" if cfg.auto_detect_local_language else "no"),
+        ("English too", "yes" if cfg.include_english else "no"),
+    ])
+    term.info("Supported: " + ", ".join(SUPPORTED) + "   (`lang auto` = English + local only)")
+
+
 def register(sub) -> None:
     s = sub.add_parser("guide", help="step-by-step cheat sheet of the most useful commands")
     s.set_defaults(func=cmd_guide)
+
+    s = sub.add_parser("search", help="search any profession: search Nurse in Berlin")
+    s.add_argument("request", nargs="+", help="e.g. Accountant in London / Any entry-level jobs in Berlin")
+    s.add_argument("--no-ai", action="store_true", help="skip AI scoring (deterministic only)")
+    s.add_argument("--source", action="append", metavar="NAME", help="only this source (repeatable)")
+    s.set_defaults(func=cmd_search)
+
+    s = sub.add_parser("lang", help="show / set the languages job titles are searched in")
+    s.add_argument("languages", nargs="*", help="ISO codes, e.g. de fr  (or: auto)")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--no-english", dest="no_english", action="store_true", default=None,
+                   help="don't search English titles")
+    g.add_argument("--english", dest="no_english", action="store_false",
+                   help="search English titles too (default)")
+    s.set_defaults(func=cmd_lang)
 
     s = sub.add_parser("show", help="quick views: cv, config, jobs, job ID, scan [ID], boards, ...")
     s.add_argument("what", choices=sorted(SHOW_TARGETS),
