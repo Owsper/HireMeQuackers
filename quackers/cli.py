@@ -1652,8 +1652,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not argv:  # bare `quackers` opens the interactive session
         setup_logging()
         store.ensure_db()
-        from quackers import shell
+        from quackers import launcher, shell
 
+        if launcher.should_launch_new_terminal():
+            launcher.launch()
+            return 0
         return shell.run()
 
     args = build_parser().parse_args(argv)
