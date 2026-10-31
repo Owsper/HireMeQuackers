@@ -28,9 +28,13 @@ def lang(*codes):
 
 
 def test_lang_shows_selected_and_available(db, capsys):
+    lang("DE")
+    capsys.readouterr()  # consume the selection-only call
     lang()
     out = capsys.readouterr().out
-    assert "Selected" in out and "DE German" in out and "JA Japanese" in out and "ZU Zulu" in out
+    # Panel header shows the selection; the grouped listing covers everything.
+    assert "Selected" in out and "DE German" in out
+    assert "Japanese" in out and "Zulu" in out
 
 
 def test_lang_adds_multiple_any_case_without_duplicates(db, capsys):
@@ -97,3 +101,41 @@ def test_slash_lang_in_interactive_shell(db, capsys):
     shell.handle_line("/lang QQ", tree, None)
     captured = capsys.readouterr()
     assert "Unknown language code" in captured.out + captured.err
+
+
+def test_lang_panel_lists_all_languages_grouped(db, capsys, monkeypatch):
+    from quackers import term
+    from services.multilingual import LANGUAGE_LABELS
+
+    # Double-rule headers, per-region data tables, selected chip, all names,
+    # wrap to terminal width.
+    monkeypatch.setenv("COLUMNS", "200")
+    lang("DE")  # pick a selection, then show the panel (bare /lang)
+    capsys.readouterr()  # consume the kv block from the "DE" call
+    lang()
+    text = term.clean(capsys.readouterr().out)
+    for glyph in ("═", "║", "┌", "│", "└", "┘"):
+        assert glyph in text, f"missing box char {glyph!r}"
+    assert "[DE] German" in text, "selected chip missing"
+    assert "LANGUAGE SETTINGS" in text
+    # Region groups present, in order.
+    assert "EUROPE" in text and "MIDDLE EAST & CENTRAL ASIA" in text
+    assert "SOUTH ASIA" in text and "EAST & SOUTHEAST ASIA" in text and "AFRICA" in text
+    # Every selectable language still appears (no language lost).
+    for name in LANGUAGE_LABELS.values():
+        assert name in text, f"missing language {name!r}"
+    # No single-line dump: the panel wraps to the 200-column width.
+    for line in text.splitlines():
+        assert len(line) < 200, f"line too long: {line!r}"
+
+    # Narrow terminal: N < 2 -> borderless vertical list, no boxes at all.
+    capsys.readouterr()  # drop the 200-col panel
+    monkeypatch.setenv("COLUMNS", "46")
+    lang()
+    narrow = term.clean(capsys.readouterr().out)
+    for glyph in ("│", "╔", "║"):
+        assert glyph not in narrow, f"unexpected box char {glyph!r} at narrow width"
+    for name in LANGUAGE_LABELS.values():
+        assert name in narrow, f"missing language {name!r} (narrow)"
+    for line in narrow.splitlines():
+        assert len(line) < 100, f"narrow line too long: {line!r}"
