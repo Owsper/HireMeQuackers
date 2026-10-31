@@ -31,6 +31,35 @@ LANGUAGE_LABELS: Dict[str, str] = {
 }
 SUPPORTED = tuple(LANGUAGE_LABELS)
 
+#: Language -> region, for the grouped `/lang` listing.  One region name per
+#: language, in `LANGUAGE_LABELS` order (display code only — no plurals, no
+#: language selection logic here).
+LANGUAGE_REGIONS: Dict[str, str] = {
+    # Europe
+    "en": "Europe", "de": "Europe", "fr": "Europe", "es": "Europe", "it": "Europe",
+    "pt": "Europe", "nl": "Europe", "pl": "Europe", "ru": "Europe", "uk": "Europe",
+    "sv": "Europe", "no": "Europe", "da": "Europe", "fi": "Europe", "el": "Europe",
+    "cs": "Europe", "sk": "Europe", "hu": "Europe", "ro": "Europe", "bg": "Europe",
+    "hr": "Europe", "sr": "Europe", "sl": "Europe", "et": "Europe", "lv": "Europe",
+    "lt": "Europe", "is": "Europe",
+    # Middle East & Central Asia
+    "tr": "Middle East & Central Asia", "ar": "Middle East & Central Asia",
+    "he": "Middle East & Central Asia", "fa": "Middle East & Central Asia",
+    "kk": "Middle East & Central Asia", "uz": "Middle East & Central Asia",
+    "ka": "Middle East & Central Asia", "hy": "Middle East & Central Asia",
+    "az": "Middle East & Central Asia",
+    # South Asia
+    "hi": "South Asia", "bn": "South Asia", "ur": "South Asia", "pa": "South Asia",
+    "ta": "South Asia", "te": "South Asia",
+    # East & Southeast Asia
+    "zh": "East & Southeast Asia", "ja": "East & Southeast Asia", "ko": "East & Southeast Asia",
+    "vi": "East & Southeast Asia", "th": "East & Southeast Asia", "id": "East & Southeast Asia",
+    "ms": "East & Southeast Asia", "tl": "East & Southeast Asia",
+    # Africa
+    "sw": "Africa", "am": "Africa", "ha": "Africa", "yo": "Africa", "ig": "Africa",
+    "so": "Africa", "af": "Africa", "zu": "Africa",
+}
+
 #: Level words handled separately from the role part of a title.
 _LEVELS = ("working student", "intern", "apprentice", "graduate", "junior")
 
