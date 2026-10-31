@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -622,8 +623,213 @@ def cmd_lang(args) -> None:
         ("English too", "yes" if cfg.include_english else "no"),
     ])
     if not words:
-        term.info("Available: " + "  ".join(_lang_label(c) for c in LANGUAGE_LABELS))
-        term.info("Add with /lang DE RU EN · reset with /lang clear · /lang help")
+        _print_langs_panel(cfg)
+
+
+_LANG_REGION_ORDER = (
+    "Europe",
+    "Middle East & Central Asia",
+    "South Asia",
+    "East & Southeast Asia",
+    "Africa",
+)
+
+
+def _print_langs_panel(cfg) -> None:
+    """Display a clean, aligned language settings panel."""
+    import os
+    from typing import Dict, List
+
+    from services.multilingual import LANGUAGE_LABELS, LANGUAGE_REGIONS
+
+    width_env = os.environ.get("COLUMNS", "").strip()
+    try:
+        width = int(width_env) if width_env else os.get_terminal_size().columns
+    except (OSError, ValueError):
+        width = 80
+
+    width = max(40, min(width, 120))
+    selected = {c.lower() for c in (cfg.search_languages or [])}
+
+    def cw(value: str) -> int:
+        return term._cell_width(term.clean(value))
+
+    def styled(value: str, style: str) -> str:
+        return term.style(value, style)
+
+    def line(char: str = "─") -> None:
+        print("  " + char * (width - 4))
+
+    def heading(value: str) -> None:
+        print()
+        print("  " + styled(value.upper(), "bold"))
+        line()
+
+    def language_entry(code: str) -> str:
+        name = LANGUAGE_LABELS[code]
+        label = f"{code.upper()}  {name}"
+
+        if code.lower() in selected:
+            return styled(label, "bold green")
+
+        return f"{styled(code.upper(), 'bold')}  {name}"
+
+    
+    def draw_languages(codes: List[str]) -> None:
+        """Display aligned language columns inside one regional border."""
+        if not codes:
+            return
+
+        entries = []
+
+        for code in codes:
+            name = LANGUAGE_LABELS[code]
+            label = f"{code.upper()}  {name}"
+
+            if code.lower() in selected:
+                styled = term.style(label, "bold green")
+            else:
+                styled = f"{term.style(code.upper(), 'bold')}  {name}"
+
+            entries.append((styled, label, cw(label)))
+
+        gap = 4
+        available = width - 8
+        max_entry_width = max(item[2] for item in entries)
+
+        columns = max(
+            1,
+            min(3, (available + gap) // (max_entry_width + gap))
+        )
+
+        rows = (len(entries) + columns - 1) // columns
+
+        # Row-major fill: entries read left-to-right, top-to-bottom, so no
+        # column window can be empty (columns == 1 => one column per entry).
+        table = [[entries[r * columns + c]
+                  if r * columns + c < len(entries) else None
+                  for c in range(columns)]
+                 for r in range(rows)]
+
+        column_widths = [
+            max((e[2] for row in table if (e := row[c]) is not None), default=0)
+            for c in range(columns)
+        ]
+
+        inner_width = sum(column_widths) + gap * (columns - 1) + 2
+
+        print("  ┌" + "─" * inner_width + "┐")
+
+        for row in table:
+            parts = []
+
+            for c, cell in enumerate(row):
+                if cell is not None:
+                    styled_entry, _, entry_width = cell
+                    parts.append(styled_entry + " " * (column_widths[c] - entry_width))
+                else:
+                    parts.append(" " * column_widths[c])
+
+            content = (" " * gap).join(parts).rstrip()
+            content_width = cw(term.clean(content))
+            print("  │ " + content + " " * max(0, inner_width - 2 - content_width) + " │")
+
+        print("  └" + "─" * inner_width + "┘")
+
+
+    # Group languages by region.
+    groups: Dict[str, List[str]] = {}
+
+    for code in LANGUAGE_LABELS:
+        region = LANGUAGE_REGIONS.get(code, "Europe")
+        groups.setdefault(region, []).append(code)
+
+    # Title.
+    print()
+    title = "LANGUAGE SETTINGS"
+
+    if width >= 60:
+        inner = width - 6
+        title_padding = max(0, (inner - cw(title)) // 2)
+
+        print("  ╭" + "─" * inner + "╮")
+        print(
+            "  │"
+            + " " * title_padding
+            + styled(title, "bold")
+            + " " * (inner - title_padding - cw(title))
+            + "│"
+        )
+        print("  ╰" + "─" * inner + "╯")
+    else:
+        print("  " + styled(title, "bold"))
+
+    # Current selections.
+    heading("Current Search Languages")
+
+    if selected:
+        selected_codes = [
+            code for code in cfg.search_languages
+            if code.lower() in LANGUAGE_LABELS
+        ]
+
+        if selected_codes:
+            draw_languages(selected_codes)
+        else:
+            print("  No valid search languages selected.")
+    else:
+        print("  No search languages selected.")
+
+    fallback = "Enabled" if cfg.include_english else "Disabled"
+    print()
+    print(f"  English fallback: {styled(fallback, 'bold')}")
+
+    # Available languages.
+    heading("Available Languages")
+
+    for region in _LANG_REGION_ORDER:
+        codes = groups.get(region, [])
+        if not codes:
+            continue
+
+        print()
+        print("  " + styled(region.upper(), "bold"))
+        draw_languages(codes)
+
+    # Include any regions not listed in the preferred order.
+    for region, codes in groups.items():
+        if region in _LANG_REGION_ORDER or not codes:
+            continue
+
+        print()
+        print("  " + styled(region.upper(), "bold"))
+        draw_languages(codes)
+
+    # Usage instructions.
+    heading("Usage")
+
+    commands = [
+        ("/lang DE RU EN", "Add search languages"),
+        ("/lang", "Show language settings"),
+        ("/lang clear", "Reset search languages"),
+        ("/lang help", "Show command help"),
+    ]
+
+    command_width = max(cw(command) for command, _ in commands) + 3
+
+    for command, description in commands:
+        padding = max(1, command_width - cw(command))
+        print(
+            "  "
+            + styled(command, "bold")
+            + " " * padding
+            + description
+        )
+
+    print()
+    print("  " + styled("Selected languages are highlighted.", "dim"))
+    print()
+
 
 
 def register(sub) -> None:
