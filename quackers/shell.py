@@ -15,13 +15,15 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Dict, List, Tuple
 
-from quackers import cli, store, term
+from quackers import cli, i18n, store, term
 
-BUILTINS: Dict[str, str] = {
-    "help": "show commands and examples",
-    "clear": "clear the screen and start a new AI conversation",
-    "exit": "leave quackers",
-}
+
+def _builtins() -> Dict[str, str]:
+    return {
+        "help": i18n.t("builtin_help"),
+        "clear": i18n.t("builtin_clear"),
+        "exit": i18n.t("builtin_exit"),
+    }
 
 CommandTree = Dict[str, Tuple[str, "CommandTree"]]
 
@@ -104,6 +106,7 @@ def _width() -> int:
 
 def banner(agent) -> None:
     from quackers import banner as art
+    from quackers import i18n
 
     profile = store.load_active_profile()
     jobs = store.list_jobs_with_match(limit=10000)
@@ -111,30 +114,34 @@ def banner(agent) -> None:
     if profile:
         who = f"{term.clean(profile.name)} (v{profile.profile_version})"
     else:
-        who = "none — /cv <file.pdf|.docx|.json>"
+        who = i18n.t("banner_profile_none")
     ai = (term.style(f"on ({agent.model})", "green") if agent.available
-          else term.style(f"off — {agent.unavailable_reason} (/env)", "yellow"))
+          else term.style(i18n.t("banner_ai_off", reason=agent.unavailable_reason), "yellow"))
     print()
     for line in art.render(_width()):
         print(line)
-    print(term.style("  local-first AI job hunting 🦆", "dim"))
+    print(term.style("  " + i18n.t("banner_tagline"), "dim"))
     print()
     term.kv([
         ("profile", who),
-        ("jobs", f"{len(jobs)} · last scan: {last['started_at'] if last else 'never'}"),
+        ("jobs", i18n.t("banner_jobs",
+                        n=len(jobs),
+                        last=(last["started_at"] if last else i18n.t("banner_jobs_never")))),
     ])
     print(f"  {term.style('AI'.ljust(7), 'dim')}  {ai}")
     print()
-    print(term.style("  /help for commands · or just type what you want", "dim"))
+    print(term.style("  " + i18n.t("banner_help"), "dim"))
 
 
 def print_help(tree: CommandTree, agent) -> None:
-    term.heading("Commands")
+    from quackers import i18n
+
+    term.heading(i18n.t("help_commands"))
     rows = [{"command": f"/{name}", "what": help_} for name, (help_, _) in tree.items()]
-    rows += [{"command": f"/{name}", "what": help_} for name, help_ in BUILTINS.items()]
+    rows += [{"command": f"/{name}", "what": help_} for name, help_ in _builtins().items()]
     term.table(rows, ["command", "what"], max_widths={"what": 70})
-    term.info("\nAdd -h to any command for its options, e.g. /jobs -h")
-    term.heading("Examples")
+    term.info("\n" + i18n.t("help_add_h"))
+    term.heading(i18n.t("help_examples"))
     term.bullets([
         "/scan --no-ai",
         "/jobs --new --sort score --why",
@@ -143,14 +150,14 @@ def print_help(tree: CommandTree, agent) -> None:
         '/config set locations="Berlin, Munich" include_remote=true',
     ])
     if agent.available:
-        term.heading("Or just ask")
+        term.heading(i18n.t("help_ask"))
         term.bullets([
             "find remote data internships and show the best 5",
             "write a confident cover letter for job 12",
             "what applications need a follow-up this week?",
         ])
     else:
-        term.info(f"\nPlain-text questions need an AI provider ({agent.unavailable_reason}).")
+        term.info("\n" + i18n.t("help_ai_off", reason=agent.unavailable_reason))
 
 
 # ---------------------------------------------------------------------------
@@ -185,9 +192,8 @@ def _make_reader(tree: CommandTree):
         history=FileHistory(str(history_dir / "quackers_history")),
         completer=SlashCompleter(),
         complete_while_typing=True,
-        bottom_toolbar=HTML(" <b>/help</b> commands · <b>Tab</b> complete · "
-                            "<b>Ctrl+C</b> twice to exit"),
-        placeholder=HTML('<style fg="ansibrightblack">Try "find remote internships" or /help</style>'),
+        bottom_toolbar=HTML(f" {i18n.t('prompt_toolbar').replace('·', ' | ')}"),
+        placeholder=HTML(f'<style fg="ansibrightblack">{i18n.t("prompt_placeholder")}</style>'),
     )
     return lambda: session.prompt(HTML("<b><ansicyan>&gt;</ansicyan></b> "))
 
@@ -198,7 +204,7 @@ def slash_completions(text: str, tree: CommandTree):
         return
     parts = text[1:].split(" ")
     if len(parts) == 1:
-        options = {**{k: v[0] for k, v in tree.items()}, **BUILTINS}
+        options = {**{k: v[0] for k, v in tree.items()}, **_builtins()}
     elif len(parts) == 2 and parts[0] in tree and tree[parts[0]][1]:
         options = {k: v[0] for k, v in tree[parts[0]][1].items()}
     else:
@@ -216,6 +222,8 @@ def slash_completions(text: str, tree: CommandTree):
 
 def handle_line(line: str, tree: CommandTree, agent) -> bool:
     """Process one input line. Returns False when the user wants to exit."""
+    from quackers import i18n
+
     line = line.replace("\ufeff", "").strip()  # PowerShell pipes prepend a BOM
     if not line:
         return True
@@ -240,25 +248,24 @@ def handle_line(line: str, tree: CommandTree, agent) -> bool:
         elif name in tree:
             execute([name, *argv[1:]])
         else:
-            term.error(f"Unknown command /{argv[0]}. Type /help.")
+            term.error(i18n.t("unknown_command", cmd=argv[0]))
         return True
 
     if not agent.available:
-        term.warn(f"AI mode is off ({agent.unavailable_reason}). "
-                  "Use commands instead, e.g. /jobs --new. Type /help for the list.")
+        term.warn(i18n.t("ai_off", reason=agent.unavailable_reason))
         return True
 
     def on_tool(call: str) -> None:
         print(term.style("● ", "cyan") + term.style(term.clean(call), "dim"))
 
-    print(term.style("  thinking…", "dim"))
+    print(term.style("  " + i18n.t("thinking"), "dim"))
     try:
         answer = agent.ask(line, on_tool)
     except KeyboardInterrupt:
-        term.error("Interrupted.")
+        term.error(i18n.t("interrupted"))
         return True
     except Exception as exc:  # noqa: BLE001 - network / quota / SDK errors
-        term.error(f"AI error: {exc}")
+        term.error(i18n.t("ai_error", exc=exc))
         return True
     if answer:
         print()
@@ -267,7 +274,12 @@ def handle_line(line: str, tree: CommandTree, agent) -> bool:
 
 
 def run() -> int:
+    from quackers import i18n
     from quackers.agent import Agent
+
+    code = i18n.load_lang()
+    if code:
+        i18n.set_language(code)
 
     tree = command_tree(cli.build_parser())
     agent = Agent(lambda argv: execute(argv, capture=True))
@@ -282,12 +294,12 @@ def run() -> int:
             if interrupted:
                 break
             interrupted = True
-            term.info(term.style("(press Ctrl+C again or type /exit to quit)", "dim"))
+            term.info(term.style(i18n.t("ctrlc_hint"), "dim"))
             continue
         except EOFError:
             break
         interrupted = False
         if not handle_line(line, tree, agent):
             break
-    term.info("Bye! 🦆")
+    term.info(i18n.t("bye"))
     return 0
