@@ -197,15 +197,18 @@ def fmt(value: Any) -> str:
 
 def confirm(prompt: str, *, assume_yes: bool = False) -> bool:
     """Ask a y/N question. Non-interactive sessions answer "no"."""
+    from quackers import i18n
+
+    yes_words = {"y", i18n.t("yes"), "yes"}
     if assume_yes:
         return True
     if not sys.stdin.isatty():
         return False
     try:
-        answer = input(f"{prompt} [y/N] ").strip().lower()
+        answer = input(prompt + " [y/N] ").strip().lower()
     except EOFError:
         return False
-    return answer in {"y", "yes"}
+    return answer in yes_words
 
 
 NO_EDITOR_HELP = (
