@@ -46,6 +46,7 @@ def evaluate_jobs(
     jobs, profile: CandidateProfile, on_progress=None,
     intent: Optional[SearchIntent] = None,
     cfg: Optional[SearchConfig] = None,
+    use_ai: bool = True,
 ):
     """Score each job and persist a JobMatch row. Returns list of (job, match).
 
@@ -54,6 +55,8 @@ def evaluate_jobs(
     and preventing a high AI score from overriding a hard-filter rejection.
     """
     client = AIClient()
+    if not use_ai:
+        client._ai.reason = "AI disabled for this scan"
     if not get_config().enable_ai_matching:
         log.info("AI matching disabled; skipping all %d jobs.", len(jobs))
         return []
@@ -76,23 +79,22 @@ def evaluate_jobs(
             continue
         try:
             result = client.score_job_fit(profile, job)
-            db.create_match(
-                session=get_session(get_engine()),
-                job_id=job.id,
-                profile_version=profile.profile_version,
-                match_score=result.get("total_score", 0.0),
-                score=result,
-                evidence=result.get("evidence") or [],
-                missing=(
-                    result.get("must_have_skills_missing", [])
-                    or result.get("missing_recommendation", [])
-                ),
-                ai_model=result.get("ai_model"),
-                scoring_config_hash=None,
-            )
+            with get_session(get_engine()) as session:
+                db.create_match(
+                    session=session,
+                    job_id=job.id,
+                    profile_version=profile.profile_version,
+                    candidate_profile_id=profile.id,
+                    match_score=result.get("total_score"),
+                    score=result,
+                    evidence=result.get("evidence") or [],
+                    missing=result.get("missing_requirements", result.get("must_have_skills_missing", [])),
+                    ai_model=result.get("ai_model"),
+                    scoring_config_hash=None,
+                )
             out.append((job, result))
         except Exception as exc:
-            log.warning("Score %s(%s) failed: %s", type(job).__name__, job.id, exc)
+            log.warning("Score storage failed: job_id=%s type=%s", job.id, type(exc).__name__)
         if on_progress:
             on_progress(i + 1, "ok")
     if skipped:

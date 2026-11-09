@@ -74,6 +74,9 @@ def _add_listing(summary: ScanSummary, vacancies: Dict[str, List[int]], item: Ra
     if vkey:
         for idx in vacancies.get(vkey, []):
             existing = summary.all_listings[idx]
+            if (item.source == existing.source and item.external_job_id and existing.external_job_id
+                    and item.external_job_id != existing.external_job_id):
+                continue  # two distinct ATS requisitions can have the same title and location
             if not same_city(existing.location, item.location):
                 continue
             summary.cross_source_duplicates += 1

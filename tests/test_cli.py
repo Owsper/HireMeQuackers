@@ -151,6 +151,8 @@ def test_cv_json_creates_active_profile(monkeypatch, tmp_path):
         return SimpleNamespace(id=7, name=fields["name"], profile_version=1)
 
     monkeypatch.setattr(cp, "upsert_from_extraction", fake_upsert)
+    monkeypatch.setattr(cli.store, "load_active_profile", lambda: None)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     cv = tmp_path / "cv.json"
     cv.write_text(json.dumps({"name": "Ada", "skills": ["Python", "SQL"],
                               "experience": ["Intern at X"], "hobby": "chess"}), encoding="utf-8")

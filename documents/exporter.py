@@ -40,12 +40,11 @@ def _new_doc_record(
     try:
         doc = db.create_generated_document(
             session=session,
-            doc_kind=doc_kind,
-            doc_hash=doc_hash,
-            source_profile_version=source_profile_version,
-            source_job_id=job_id,
-            path=str(path),
-            metadata_json=meta,
+            doc_type=doc_kind,
+            profile_version=source_profile_version,
+            job_id=job_id,
+            file_path=str(path),
+            notes=__import__("json").dumps({"content_hash": doc_hash, **(meta or {})}),
         )
         if opened:
             session.commit()
@@ -208,3 +207,57 @@ def _content_hash(s: str) -> str:
     import hashlib
 
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:64]
+
+
+def export_cv_text(text: str, dest: Path) -> None:
+    """Single-column ATS output with conventional headings and Unicode support."""
+    from xml.sax.saxutils import escape
+    suffix = dest.suffix.lower()
+    if suffix in {".txt", ".md"}:
+        dest.write_text(text, encoding="utf-8")
+    elif suffix == ".docx":
+        from docx import Document
+        from docx.shared import Inches, Pt, RGBColor
+        document = Document()
+        for section in document.sections:
+            section.top_margin = section.bottom_margin = Inches(.65)
+            section.page_width, section.page_height = Inches(8.5), Inches(11)
+        document.styles["Normal"].font.name = "Arial"
+        document.styles["Normal"].font.size = Pt(11)
+        for name in ("Title", "Heading 1", "Normal"):
+            document.styles[name].font.color.rgb = RGBColor(0, 0, 0)
+        for index, line in enumerate(text.splitlines()):
+            if index == 0:
+                document.add_paragraph(line, style="Title")
+            elif line.startswith("## "):
+                document.add_heading(line[3:], 1)
+            elif line.startswith("- "):
+                document.add_paragraph(line[2:], style="List Bullet")
+            elif line:
+                document.add_paragraph(line)
+        document.save(str(dest))
+    elif suffix == ".pdf":
+        import os
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        font_path = next((p for p in (os.getenv("QUACKERS_PDF_FONT", ""), "C:/Windows/Fonts/arial.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf") if p and Path(p).is_file()), None)
+        if font_path:
+            pdfmetrics.registerFont(TTFont("QuackersUnicode", font_path))
+        elif any(ord(ch) > 255 for ch in text):
+            raise ValueError("Set QUACKERS_PDF_FONT to a Unicode TTF font for this CV")
+        styles = getSampleStyleSheet()
+        for style in styles.byName.values():
+            style.fontName = "QuackersUnicode" if font_path else "Helvetica"
+        story = []
+        for index, line in enumerate(text.splitlines()):
+            if not line:
+                story.append(Spacer(1, 5))
+            else:
+                style = styles["Title"] if index == 0 else styles["Heading2"] if line.startswith("## ") else styles["BodyText"]
+                content = line[3:] if line.startswith("## ") else line
+                story.append(Paragraph(escape(content), style))
+        SimpleDocTemplate(str(dest), leftMargin=45, rightMargin=45, topMargin=40, bottomMargin=40).build(story)
+    else:
+        raise ValueError("CV export requires .pdf, .docx, .txt or .md")

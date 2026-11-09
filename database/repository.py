@@ -171,11 +171,14 @@ def update_job_from_enrichment(
         if value is None or value == "":
             return
         current = getattr(job, attr, None)
-        if current is None or current == "":
+        if current is None or current in ("", "unknown", "other", "Unknown"):
             setattr(job, attr, value)
             changes = True
 
-    _fill("description", detail.description_text)
+    old_len = len(job.description or "")
+    if detail.description_text and (not old_len or len(detail.description_text) > old_len * 1.3 and old_len < 800):
+        job.description = detail.description_text
+        changes = True
     _fill("company", detail.employer)
     _fill("location", detail.location)
     _fill("salary", detail.salary_raw)
@@ -183,6 +186,30 @@ def update_job_from_enrichment(
     _fill("workplace_arrangement", detail.workplace_arrangement)
     _fill("application_url", detail.application_url)
     _fill("education_requirements", detail.education_requirements)
+    _fill("experience_requirements", detail.experience_years)
+    if detail.required_skills and not job.required_skills:
+        job.required_skills_json = _j(detail.required_skills)
+    if detail.preferred_skills and not job.preferred_skills:
+        job.preferred_skills_json = _j(detail.preferred_skills)
+    # Every attempt is recorded, including failures, for retry policy and diagnostics.
+    from services.job_intelligence import description_quality
+    job.extracted_at = detail.extracted_at
+    job.extraction_errors_json = _j(detail.extraction_errors)
+    if detail.description_text and job.description == detail.description_text:
+        job.raw_description = detail.raw_content
+        job.extraction_method = detail.extraction_method
+        job.extraction_status, job.description_completeness = description_quality(job.description, detail.extraction_method)
+        if detail.extraction_status == "PARTIAL":
+            job.extraction_status = "PARTIAL"
+            job.description_completeness = min(job.description_completeness, detail.description_completeness or .65)
+        job.structured_requirements_json = _j(detail.structured_requirements)
+    elif not job.description:
+        job.extraction_status = detail.extraction_status
+        job.description_completeness = 0
+        job.extraction_method = detail.extraction_method
+    elif job.extraction_status is None:
+        job.extraction_status, job.description_completeness = description_quality(job.description)
+    changes = True
     if detail.description_text:
         from services.multilingual import detect_language, extract_required_languages
 
@@ -212,16 +239,22 @@ def update_job_from_enrichment(
                 pass
     if not changes:
         return 0
-    job.last_verified_at = utcnow()
+    if detail.description_text:
+        job.last_verified_at = utcnow()
     session.commit()
     return 1
 
 
 def list_jobs_needing_enrichment(session: Session, limit: int = 25) -> List[Job]:
     """Jobs with no description and an original_url to fetch."""
+    from config.settings import get_config
+    cfg = get_config()
+    complete = (Job.extraction_status == "COMPLETE") & ((Job.extraction_errors_json.is_(None)) | (Job.extraction_errors_json == "[]"))
     return (
         session.query(Job)
-        .filter((Job.description.is_(None)) | (Job.description == ""))
+        .filter((Job.extracted_at.is_(None)) |
+                (complete & (Job.extracted_at <= utcnow() - timedelta(hours=cfg.extraction_refresh_hours))) |
+                (((Job.extraction_status.is_(None)) | ~complete) & (Job.extracted_at <= utcnow() - timedelta(hours=cfg.extraction_retry_hours))))
         .filter(Job.original_url.isnot(None))
         .filter(Job.original_url != "")
         .limit(limit)
@@ -314,7 +347,8 @@ def create_match(
     *,
     job_id: int,
     profile_version: int,
-    match_score: float,
+    match_score: Optional[float],
+    candidate_profile_id: Optional[int] = None,
     score: Optional[Dict[str, Any]] = None,
     evidence: Optional[List[str]] = None,
     missing: Optional[List[str]] = None,
@@ -324,7 +358,7 @@ def create_match(
     # Upsert: replace existing for (job_id, profile_version)
     existing = (
         session.query(JobMatch)
-        .filter_by(job_id=job_id, profile_version=profile_version)
+        .filter_by(job_id=job_id, profile_version=profile_version, candidate_profile_id=candidate_profile_id)
         .first()
     )
     if existing is not None:
@@ -340,6 +374,7 @@ def create_match(
         return existing
 
     record = JobMatch(
+        candidate_profile_id=candidate_profile_id,
         job_id=job_id,
         profile_version=profile_version,
         match_score=match_score,
@@ -357,8 +392,14 @@ def create_match(
 
 
 def get_match_for_job(
-    session: Session, job_id: int, profile_version: Optional[int] = None
+    session: Session, job_id: int, profile_version: Optional[int] = None,
+    candidate_profile_id: Optional[int] = None,
 ) -> Optional[JobMatch]:
+    if candidate_profile_id is not None:
+        query = session.query(JobMatch).filter_by(job_id=job_id, candidate_profile_id=candidate_profile_id)
+        if profile_version is not None:
+            query = query.filter_by(profile_version=profile_version)
+        return query.order_by(JobMatch.evaluated_at.desc()).first()
     if profile_version is not None:
         return (
             session.query(JobMatch)
@@ -561,9 +602,9 @@ def mark_applied(
 def transition_application_status(
     session: Session, app: Application, new_status: str
 ) -> Application:
-    app.status = new_status
     if new_status == "INTERVIEW" and app.status != "INTERVIEW":
         app.interview_status = "Scheduled"
+    app.status = new_status
     session.commit()
     session.refresh(app)
     return app

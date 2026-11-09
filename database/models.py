@@ -91,6 +91,13 @@ class Job(Base):
     # applicant must speak (ISO 639-1; NULL = unknown, never guessed) ---
     description_language: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     required_languages_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    raw_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    structured_requirements_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    extraction_method: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    extraction_status: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    extracted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    description_completeness: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    extraction_errors_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     @property
     def required_languages(self) -> List[str]:
@@ -161,16 +168,18 @@ class CandidateProfile(Base):
 
 
 class JobMatch(Base):
-    __tablename__ = "job_matches"
+    # Legacy job_matches remains intact; v2 copies its rows without guessing candidate identity.
+    __tablename__ = "candidate_job_matches"
     __table_args__ = (
-        UniqueConstraint("job_id", "profile_version", name="uq_match_job_profile"),
+        UniqueConstraint("job_id", "candidate_profile_id", "profile_version", name="uq_candidate_job_version"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     job_id: Mapped[int] = mapped_column(
         ForeignKey("jobs.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    match_score: Mapped[float] = mapped_column(Float, default=0.0)
+    candidate_profile_id: Mapped[Optional[int]] = mapped_column(ForeignKey("candidate_profiles.id"), nullable=True, index=True)
+    match_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     score_json: Mapped[Optional[str]] = mapped_column(Text)
     matching_evidence_json: Mapped[Optional[str]] = mapped_column(Text)
     missing_requirements_json: Mapped[Optional[str]] = mapped_column(Text)

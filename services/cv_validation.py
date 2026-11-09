@@ -92,6 +92,18 @@ def normalize_json_cv(data: Dict[str, Any]) -> tuple[Dict[str, Any], List[str]]:
         if key == "other":
             continue
         canon = ALIASES.get(key, key)
+        if canon == "skills" and "skills" in form:
+            values = value if isinstance(value, list) else [value] if isinstance(value, str) else []
+            existing = form["skills"] if isinstance(form["skills"], list) else [form["skills"]]
+            form["skills"] = list(dict.fromkeys(str(x) for x in existing + values if x))
+            continue
+        if key in {"technical_skills", "soft_skills", "tools", "technologies"}:
+            values = value if isinstance(value, list) else [value] if isinstance(value, str) else []
+            existing = form.get("skills", [])
+            existing = existing if isinstance(existing, list) else [existing]
+            form["skills"] = list(dict.fromkeys(str(x) for x in existing + values if x))
+            other.setdefault("skill_groups", {})[key] = values
+            continue
         if canon in KNOWN_FIELDS:
             if canon not in form or not form[canon]:
                 form[canon] = value

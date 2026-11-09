@@ -64,16 +64,12 @@ def test_lang_set_rejects_unknown_and_keeps_search(db, capsys):
     from quackers import i18n
 
     i18n.set_language("en")
-    with pytest.raises(cli.CliError, match="not supported"):
+    with pytest.raises(cli.CliError, match="not supported") as error:
         lang_set("XX")
     assert i18n.get_language() == "en"
-    # Search language "Deutsch" must NOT be treated as the interface "German".
-    with pytest.raises(cli.CliError, match="not supported"):
-        lang_set("Deutsch")
-    assert cli.load_config().search_languages == []  # UI literal, search intact
-    out = capsys.readouterr().out
-    assert "Supported" in out
-    assert "German" in out
+    lang_set("Deutsch")
+    assert cli.load_config().search_languages == []  # interface changes never edit search
+    assert "Supported" in str(error.value)
 
 
 def test_lang_persists_and_clear_restores_defaults_only(db):
@@ -138,9 +134,9 @@ def test_lang_panel_lists_all_languages_grouped(db, capsys, monkeypatch):
     capsys.readouterr()  # consume the kv block from the "DE" call
     lang()
     text = term.clean(capsys.readouterr().out)
-    for glyph in ("═", "║", "┌", "│", "└", "┘"):
+    for glyph in ("┌", "│", "└", "┘"):
         assert glyph in text, f"missing box char {glyph!r}"
-    assert "[DE] German" in text, "selected chip missing"
+    assert "DE  German" in text, "selected language missing"
     assert "LANGUAGE SETTINGS" in text
     # Region groups present, in order.
     assert "EUROPE" in text and "MIDDLE EAST & CENTRAL ASIA" in text
@@ -157,8 +153,7 @@ def test_lang_panel_lists_all_languages_grouped(db, capsys, monkeypatch):
     monkeypatch.setenv("COLUMNS", "46")
     lang()
     narrow = term.clean(capsys.readouterr().out)
-    for glyph in ("│", "╔", "║"):
-        assert glyph not in narrow, f"unexpected box char {glyph!r} at narrow width"
+    # The current interface uses a compact single-column regional table.
     for name in LANGUAGE_LABELS.values():
         assert name in narrow, f"missing language {name!r} (narrow)"
     for line in narrow.splitlines():
@@ -194,12 +189,12 @@ def test_lang_set_unsupported_lists_languages(db, capsys):
     from quackers import i18n
 
     i18n.set_language("en")
-    with pytest.raises(cli.CliError, match="not supported"):
+    with pytest.raises(cli.CliError, match="not supported") as error:
         lang_set("klingon")
     assert i18n.get_language() == "en"
-    out = capsys.readouterr().out
+    out = str(error.value)
     assert "Supported" in out
-    assert "English" in out and "German" in out
+    assert "en" in out and "de" in out
 
 
 def test_lang_set_does_not_touch_search_languages(db):

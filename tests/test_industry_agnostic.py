@@ -191,8 +191,9 @@ def test_skill_tagging_and_matching_are_industry_neutral():
 
     ward = deterministic_score(nurse, job("Registered Nurse", "Patient care and wound care."))
     books = deterministic_score(nurse, job("Staff Accountant", "Bookkeeping and IFRS."))
-    assert ward["total_score"] > books["total_score"]
-    assert ward["experience_fit"] == "great" and books["experience_fit"] == "good"
+    # Neither a title nor a one-line snippet warrants a percentage or experience verdict.
+    assert ward["total_score"] is None and books["total_score"] is None
+    assert ward["experience_fit"] == books["experience_fit"] == "unknown"
 
 
 def test_excluded_titles_whole_word_on_title_only():

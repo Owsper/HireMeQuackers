@@ -1,153 +1,98 @@
-"""Best-effort robots.txt cache + check (default allow, best-effort fetch)."""
+"""Cached robots rules evaluated per URL, conservatively handling outages."""
 from __future__ import annotations
-
-import re
 import threading
 import time
-from typing import Dict, Tuple
 from urllib.parse import urlparse
-
+from urllib.robotparser import RobotFileParser
 from services.safe_requests import safe_get
 
-_ROBOTS_CACHE: Dict[str, Tuple[float, bool]] = {}
+_ROBOTS_CACHE: dict = {}
 _LOCK = threading.Lock()
 _TTL_SECONDS = 600
+_LAST_FETCH: dict[str, float] = {}
+USER_AGENT = "HireMeQuackers"
 
 
-def is_allowed_by_robots(url: str, *, timeout: float = 5.0) -> bool:
-    """Check `<scheme>://<host>/robots.txt` (best-effort). Allow if:
-
-    - fetch fails (assume allowed; a DMCA on robots is not the point)
-    - robots.txt missing (200 or not) without a `Disallow: /` rule
-    - my path is allowed by a User-agent-specific `Allow:` rule
-    """
-    try:
-        parsed = urlparse(url)
-    except Exception:
-        return True
-    host = (parsed.hostname or "").lower()
-    if not host:
-        return True
-
-    now = time.monotonic()
+def is_allowed_by_robots(url: str, *, timeout: float = 5.0, client=None) -> bool:
+    p = urlparse(url)
+    if p.scheme not in {"http", "https"} or not p.hostname:
+        return False
+    origin, now = f"{p.scheme}://{p.netloc}", time.monotonic()
     with _LOCK:
-        entry = _ROBOTS_CACHE.get(host)
-        if entry and entry[0] + _TTL_SECONDS > now:
-            return entry[1]
-
-    robots_url = f"{parsed.scheme}://{host}/robots.txt"
-    try:
-        result = safe_get(
-            robots_url, timeout=min(timeout, 5.0), max_bytes=64 * 1024
-        )
-    except Exception:
+        entry = _ROBOTS_CACHE.get(origin)
+    if entry is None or entry[0] + _TTL_SECONDS <= now:
+        try:
+            result = safe_get(origin + "/robots.txt", timeout=min(timeout, 5), max_bytes=65536, client=client)
+            rules = result.content.decode("utf-8", errors="replace") if result.status_code == 200 else result.status_code in {404, 410}
+        except Exception:
+            rules = False
+        entry = (now, rules)
         with _LOCK:
-            _ROBOTS_CACHE[host] = (now, True)
-        return True
-
-    if result.status_code != 200:
-        with _LOCK:
-            _ROBOTS_CACHE[host] = (now, True)
-        return True
-
-    text = result.content.decode("utf-8", errors="ignore")
-    allowed = _path_allowed(text, path=parsed.path or "/")
-    with _LOCK:
-        _ROBOTS_CACHE[host] = (now, allowed)
-    return allowed
+            _ROBOTS_CACHE[origin] = entry
+    return entry[1] if isinstance(entry[1], bool) else _path_allowed(entry[1], url)
 
 
 def _path_allowed(robots_text: str, path: str) -> bool:
-    """Simple robots.txt walk: pick Universe / * block and longest-match rule.
-
-    Returns False when a `Disallow` rule with specificity >= any `Allow`
-    matches the target path.
-    """
-    if not robots_text.strip():
-        return True
-
-    parsed_clean = [ln for ln in robots_text.splitlines()]
-
-    # Split blocks: User-agent line begins a block; Allow/Disallow belong to it.
-    # We use the first `*` block (or the first block if no wildcard).
-    cur_agent: str | None = None
-    cur_rules: list[tuple[str, str]] = []
-    items: list[tuple[str, list[tuple[str, str]]]] = []
-
-    for ln in parsed_clean:
-        raw = ln.split("#", 1)[0].strip()
-        if not raw or ":" not in raw:
+    import re
+    groups, agents, rules = [], [], []
+    for line in robots_text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if ":" not in line:
             continue
-        field, value = raw.split(":", 1)
-        field = field.strip().lower()
-        value = value.strip()
-        if field == "user-agent":
-            if cur_agent is not None and cur_rules:
-                items.append((cur_agent, cur_rules))
-            cur_agent = value
-            cur_rules = []
-        elif field in ("allow", "disallow"):
-            if cur_agent is None:
-                cur_agent = "*"
-            cur_rules.append((field, value))
-    if cur_agent is not None and cur_rules:
-        items.append((cur_agent, cur_rules))
+        key, value = [s.strip() for s in line.split(":", 1)]
+        key = key.lower()
+        if key == "user-agent":
+            if rules:
+                groups.append((agents, rules))
+                agents, rules = [], []
+            agents.append(value.lower())
+        elif key in {"allow", "disallow"} and agents:
+            rules.append((key, value))
+    groups.append((agents, rules))
+    specific = [(a, r) for a, r in groups if any(x != "*" and x in USER_AGENT.lower() for x in a)]
+    selected = specific or [(a, r) for a, r in groups if "*" in a]
+    p = urlparse(path)
+    target = p.path + ("?" + p.query if p.query else "") if p.scheme else path
+    matches = []
+    for _, group_rules in selected:
+        for directive, pattern in group_rules:
+            if not pattern:
+                continue
+            regex = re.escape(pattern).replace(r"\*", ".*")
+            regex = regex[:-2] + "$" if regex.endswith(r"\$") else regex
+            if re.match(regex, target):
+                matches.append((len(pattern.replace("*", "").rstrip("$")), directive == "allow"))
+    return max(matches)[1] if matches else True
 
-    # Pick preferred block
-    star_block = None
-    for agent, rules in items:
-        if agent == "*":
-            star_block = rules
-            break
-    chosen = star_block
-    if chosen is None and items:
-        chosen = items[0][1]
 
-    if not chosen:
-        return True
-
-    # Track longest Allow / Disallow that matches our path
-    best_allow: int | None = None
-    best_disallow: int | None = None
-    for directive, pattern in chosen:
-        if not pattern or not _pattern_matches(pattern, path):
-            continue
-        specificity = len(pattern.rstrip("*"))
-        if directive == "allow" and (best_allow is None or specificity > best_allow):
-            best_allow = specificity
-        elif directive == "disallow" and (
-            best_disallow is None or specificity > best_disallow
-        ):
-            best_disallow = specificity
-
-    if best_allow is None and best_disallow is None:
-        return True
-    if best_allow is not None and best_disallow is not None:
-        return best_allow >= best_disallow
-    if best_allow is not None:
-        return True
-    if best_disallow is not None:
-        return best_disallow == 0
-    return True
+def wait_for_crawl_slot(url: str) -> None:
+    """Honor published crawl delay/request rate as well as the app's domain minimum."""
+    from config.settings import get_config
+    p = urlparse(url)
+    origin = f"{p.scheme}://{p.netloc}"
+    interval = get_config().rate_limit_min_seconds
+    entry = _ROBOTS_CACHE.get(origin)
+    if entry and isinstance(entry[1], str):
+        parser = RobotFileParser()
+        parser.parse(entry[1].splitlines())
+        interval = max(interval, parser.crawl_delay(USER_AGENT) or parser.crawl_delay("*") or 0)
+        rate = parser.request_rate(USER_AGENT) or parser.request_rate("*")
+        if rate and rate.requests:
+            interval = max(interval, rate.seconds / rate.requests)
+    with _LOCK:
+        now = time.monotonic()
+        slot = max(now, _LAST_FETCH.get(origin, 0) + interval)
+        _LAST_FETCH[origin] = slot
+    if slot > now:
+        time.sleep(slot - now)
 
 
 def _pattern_matches(pattern: str, path: str) -> bool:
-    if not pattern:
-        return True
-    if pattern == "/":
-        return True
-    p = path.split("?", 1)[0]
-    pat = re.escape(pattern)
-    pat = re.sub(r"\*", ".*", pat)
-    if not pat.endswith("$"):
-        pat = "(" + pat + "(.*)?)"
-    try:
-        return re.match(pat, p) is not None
-    except Exception:
-        return False
+    import fnmatch
+    return fnmatch.fnmatch(path, pattern + "*")
 
 
 def clear_cache() -> None:
     with _LOCK:
         _ROBOTS_CACHE.clear()
-
+        _LAST_FETCH.clear()

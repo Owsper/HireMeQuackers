@@ -35,7 +35,7 @@ def test_db_table_exists(db_session):
     expected = {
         "jobs",
         "candidate_profiles",
-        "job_matches",
+        "candidate_job_matches",
         "scan_records",
         "source_health",
         "applications",

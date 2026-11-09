@@ -12,9 +12,14 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
+import time
+from urllib.parse import urlparse
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from config.settings import get_config
+
+log = logging.getLogger("jobhunter.ai")
 
 
 class Provider(NamedTuple):
@@ -100,6 +105,8 @@ class LLM:
     """The configured provider + model."""
 
     def __init__(self, cfg):
+        self.cfg = cfg
+        self.last_diagnostic: Dict[str, Any] = {}
         self.provider = pick(cfg)
         self.sdk = self.model = self.key = self.base_url = ""
         self.reason: Optional[str] = None
@@ -116,7 +123,7 @@ class LLM:
         # an empty OLLAMA_BASE_URL must never fall through to api.openai.com
         self.base_url = {"openai": cfg.openai_base_url, "ollama": cfg.ollama_base_url}.get(self.provider) or p.base_url
         # local OpenAI-compatible servers (LM Studio, vLLM, ...) usually take no key
-        keyless = self.provider == "openai" and self.base_url and not self.responses_api
+        keyless = self.provider == "openai" and urlparse(self.base_url).hostname in {"localhost", "127.0.0.1", "::1"}
         if p.key and not self.key and not keyless:
             self.reason = f"{p.key.upper()} is not set in .env"
         elif not sdk_installed(self.sdk):
@@ -133,29 +140,30 @@ class LLM:
     @property
     def responses_api(self) -> bool:
         # OpenAI itself gets the Responses API; compatible servers only speak Chat Completions
-        return self.provider == "openai" and (not self.base_url or "api.openai.com" in self.base_url)
+        return self.provider == "openai" and (not self.base_url or urlparse(self.base_url).hostname == "api.openai.com")
 
     def client(self):
         if self._client is None:
             if self.sdk == "gemini":
                 from google import genai
 
-                self._client = genai.Client(api_key=self.key)
+                self._client = genai.Client(api_key=self.key, http_options={"timeout": int(self.cfg.ai_timeout_seconds * 1000), "retry_options": {"attempts": 1}})
             elif self.sdk == "openai":
                 import openai
 
-                self._client = openai.OpenAI(api_key=self.key or "unused", base_url=self.base_url or None)
+                self._client = openai.OpenAI(api_key=self.key or "unused", base_url=self.base_url or None,
+                                             timeout=self.cfg.ai_timeout_seconds, max_retries=0)
             else:
                 import anthropic
 
-                self._client = anthropic.Anthropic(api_key=self.key)
+                self._client = anthropic.Anthropic(api_key=self.key, timeout=self.cfg.ai_timeout_seconds, max_retries=0)
         return self._client
 
     def complete(self, system: str, prompt: str, json_mode: bool = False) -> str:
         """One-shot answer as text (JSON text with json_mode). Raises LLMError."""
         if not self.available:
             raise LLMError(self.reason)
-        try:
+        def call():
             if self.sdk == "gemini":
                 text = self._gemini(system, prompt, json_mode)
             elif self.sdk == "anthropic":
@@ -164,13 +172,41 @@ class LLM:
                 text = self._responses(system, prompt, json_mode)
             else:
                 text = self._chat_completions(system, prompt, json_mode)
-        except LLMError:
-            raise
-        except Exception as exc:
-            raise LLMError(f"{self.label} : {_safe(exc)}") from exc
-        if not (text or "").strip():
-            raise LLMError(f"{self.label} : empty response")
-        return text
+            if not isinstance(text, str) or not text.strip():
+                raise LLMError("empty response")
+            if json_mode and parse_json(text) is None:
+                raise LLMError("malformed JSON response")
+            return text
+        return self.request("complete_json" if json_mode else "complete", call)
+
+    def request(self, operation: str, call):
+        """Bounded retries; diagnostics deliberately omit prompts, URLs and exception bodies."""
+        started = time.monotonic()
+        for attempt in range(1, self.cfg.ai_max_attempts + 1):
+            try:
+                result = call()
+                self.last_diagnostic = dict(provider=self.provider, model=self.model, operation=operation,
+                    success=True, response_validation="passed", retry_count=attempt - 1,
+                    duration_seconds=round(time.monotonic() - started, 3), failure_reason=None)
+                log.info("AI request %s", self.last_diagnostic)
+                return result
+            except Exception as exc:
+                status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+                reason = failure_reason(exc)
+                retryable = status in (408, 409, 429, 500, 502, 503, 504) or reason in {"timeout", "network_error", "provider_outage"}
+                self.last_diagnostic = dict(provider=self.provider, model=self.model, operation=operation,
+                    success=False, response_validation="failed" if isinstance(exc, LLMError) else "not_run",
+                    retry_count=attempt - 1, duration_seconds=round(time.monotonic() - started, 3), failure_reason=reason)
+                log.warning("AI request %s", self.last_diagnostic)
+                if not retryable or attempt == self.cfg.ai_max_attempts:
+                    raise LLMError(f"{self.label}: {reason}") from None
+                delay = min(30, self.cfg.ai_backoff_seconds * 2 ** (attempt - 1))
+                headers = getattr(getattr(exc, "response", None), "headers", {}) or {}
+                try:
+                    delay = min(30, max(delay, float(headers.get("retry-after", 0))))
+                except (TypeError, ValueError):
+                    pass
+                time.sleep(delay)
 
     def chat(self, system: str, tools: Sequence[Tool]):
         """A multi-turn session where the model may call `tools`."""
@@ -216,8 +252,9 @@ class LLM:
             kw["response_format"] = {"type": "json_object"}
         try:
             r = self.client().chat.completions.create(**kw)
-        except openai.BadRequestError:
-            if not json_mode:
+        except openai.BadRequestError as exc:
+            # Retry only a known unsupported response-format option, not auth/content/model errors.
+            if not json_mode or not any(x in str(exc).lower() for x in ("response_format", "json mode", "json_object")):
                 raise
             # some local models reject JSON mode; the prompt still asks for JSON
             del kw["response_format"]
@@ -225,11 +262,38 @@ class LLM:
         return r.choices[0].message.content
 
 
+def failure_reason(exc: Exception) -> str:
+    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    if status in (401, 403):
+        return "authentication_or_permission_error"
+    if status == 429:
+        return "rate_limit_or_quota_exceeded"
+    if status == 404:
+        return "model_or_endpoint_not_found"
+    if status in (400, 422):
+        return "invalid_request_or_model_parameters"
+    if isinstance(status, int) and status >= 500:
+        return "provider_outage"
+    name = type(exc).__name__.lower()
+    if "timeout" in name or isinstance(exc, TimeoutError):
+        return "timeout"
+    if "connection" in name or isinstance(exc, ConnectionError):
+        return "network_error"
+    if isinstance(exc, LLMError):
+        # Only locally constructed validation messages are exposed.
+        for label in ("empty response", "malformed JSON response", "declined", "invalid response"):
+            if label in str(exc):
+                return label
+        return "response_validation_failed"
+    return f"request_failed ({type(exc).__name__})" + (f" HTTP {status}" if isinstance(status, int) else "")
+
+
 # ---- tool-calling chats: send(text) / send_results([(call, result_dict)]) -> Reply ----
 
 
 class GeminiChat:
     def __init__(self, ai: LLM, system: str, tools: Sequence[Tool]):
+        self._ai = ai
         from google.genai import types
 
         decls = [types.FunctionDeclaration(name=n, description=d, parameters_json_schema=s) for n, d, s in tools]
@@ -241,14 +305,14 @@ class GeminiChat:
         self._chat = ai.client().chats.create(model=ai.model, config=cfg)
 
     def send(self, text: str) -> Reply:
-        return self._reply(self._chat.send_message(text))
+        return self._reply(self._ai.request("chat", lambda: self._chat.send_message(text)))
 
     def send_results(self, results) -> Reply:
         from google.genai import types
 
         parts = [types.Part(function_response=types.FunctionResponse(id=c.id or None, name=c.name, response=out))
                  for c, out in results]
-        return self._reply(self._chat.send_message(parts))
+        return self._reply(self._ai.request("chat", lambda: self._chat.send_message(parts)))
 
     def _reply(self, r) -> Reply:
         calls = [Call(c.id or "", c.name, dict(c.args or {})) for c in r.function_calls or []]
@@ -274,9 +338,9 @@ class ResponsesChat:
 
     def _next(self) -> Reply:
         # store=False keeps the CV off OpenAI's servers; reasoning is carried client-side instead
-        r = self._ai.client().responses.create(
+        r = self._ai.request("chat", lambda: self._ai.client().responses.create(
             model=self._ai.model, instructions=self._system, input=self._input, tools=self._tools,
-            store=False, include=["reasoning.encrypted_content"])
+            store=False, include=["reasoning.encrypted_content"]))
         self._input += r.output
         calls = [Call(o.call_id, o.name, _args(o.arguments)) for o in r.output if o.type == "function_call"]
         return Reply("" if calls else r.output_text, calls)
@@ -298,8 +362,8 @@ class CompatChat:
         return self._next()
 
     def _next(self) -> Reply:
-        m = self._ai.client().chat.completions.create(
-            model=self._ai.model, messages=self._msgs, tools=self._tools).choices[0].message
+        m = self._ai.request("chat", lambda: self._ai.client().chat.completions.create(
+            model=self._ai.model, messages=self._msgs, tools=self._tools)).choices[0].message
         tcs = [t for t in m.tool_calls or [] if t.type == "function"]
         msg: Dict[str, Any] = {"role": "assistant", "content": m.content or ""}
         reasoning = getattr(m, "reasoning_content", None)
@@ -334,7 +398,7 @@ class ClaudeChat:
         return self._next()
 
     def _next(self) -> Reply:
-        r = self._ai.claude(system=self._system, tools=self._tools, messages=self._msgs)
+        r = self._ai.request("chat", lambda: self._ai.claude(system=self._system, tools=self._tools, messages=self._msgs))
         # keep every block (tool_use, thinking, fallback) so the next turn is valid
         self._msgs.append({"role": "assistant", "content": r.content})
         calls = [Call(b.id, b.name, dict(b.input or {})) for b in r.content if b.type == "tool_use"]

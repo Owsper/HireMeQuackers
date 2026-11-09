@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from html import unescape
 from typing import List, Optional
@@ -22,10 +23,10 @@ from bs4 import BeautifulSoup
 from .sanitization import strip_html, truncate
 from .safe_requests import safe_get
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jobhunter.extraction")
 
-MAX_DESCRIPTION_CHARS = 4000
-MAX_RESPONSE_BYTES = 524_288  # 512 KB
+MAX_DESCRIPTION_CHARS = 60000
+MAX_RESPONSE_BYTES = 3 * 1024 * 1024
 
 _APPLY_TEXTS = {"apply", "apply now", "apply here", "submit application", "apply for this role", "werde teammitglied"}
 
@@ -50,6 +51,14 @@ class ExtractedDetail:
     application_url: Optional[str] = None
     json_ld_present: bool = False
     extraction_confidence: float = 0.0
+    preferred_skills: List[str] = field(default_factory=list)
+    structured_requirements: List[dict] = field(default_factory=list)
+    raw_content: Optional[str] = None
+    extraction_method: str = "unavailable"
+    extraction_status: str = "UNAVAILABLE"
+    extracted_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    description_completeness: float = 0.0
+    extraction_errors: List[str] = field(default_factory=list)
 
 
 def _parse_salary_range(salary_raw: str) -> tuple[Optional[int], Optional[int], Optional[str]]:
@@ -90,7 +99,7 @@ _EMPLOYMENT_KEYWORDS = [
 
 
 def _classify_employment(text: str) -> Optional[str]:
-    y = (text or "").lower()
+    y = (text or "").lower().replace("_", " ")
     for etype, kws in _EMPLOYMENT_KEYWORDS:
         if any(kw in y for kw in kws):
             return etype
@@ -127,7 +136,7 @@ def _extract_json_ld(html: str) -> dict:
                 data = json.loads(unescape(raw))
             except (json.JSONDecodeError, ValueError):
                 continue
-        nodes = data if isinstance(data, list) else [data]
+        nodes = _nodes(data)
         for node in nodes:
             if not isinstance(node, dict):
                 continue
@@ -139,8 +148,19 @@ def _extract_json_ld(html: str) -> dict:
     return {}
 
 
+def _nodes(data):
+    if isinstance(data, dict):
+        yield data
+        for value in data.values():
+            if isinstance(value, (dict, list)):
+                yield from _nodes(value)
+    elif isinstance(data, list):
+        for item in data:
+            yield from _nodes(item)
+
+
 def _json_ld_to_detail(ld: dict, base_url: str) -> ExtractedDetail:
-    d = ExtractedDetail(json_ld_present=True, extraction_confidence=0.9)
+    d = ExtractedDetail(json_ld_present=True, extraction_confidence=0.9, extraction_method="json_ld")
     # JobPosting schema: "title" is the canonical field; "name" is a legacy alias.
     d.title = ld.get("title") or ld.get("name")
     d.description_text = _clean_description(ld.get("description"))
@@ -148,10 +168,12 @@ def _json_ld_to_detail(ld: dict, base_url: str) -> ExtractedDetail:
     if isinstance(ho, dict):
         d.employer = ho.get("name")
     jl = ld.get("jobLocation")
+    if isinstance(jl, list):
+        jl = jl[0] if jl else None
     if isinstance(jl, dict):
         addr = jl.get("address") or {}
         if isinstance(addr, dict):
-            parts = [addr.get(k) for k in ("streetAddress", "addressLocality", "addressRegion") if addr.get(k)]
+            parts = [str(addr.get(k)) for k in ("streetAddress", "addressLocality", "addressRegion", "addressCountry") if addr.get(k)]
             if parts:
                 d.location = ", ".join(parts)
         elif isinstance(jl.get("name"), str):
@@ -173,7 +195,7 @@ def _json_ld_to_detail(ld: dict, base_url: str) -> ExtractedDetail:
     if d.employment_type is None:
         d.employment_type = _classify_employment(f"{d.title or ''} {d.description_text or ''}")
     vp = ld.get("virtualLocation")
-    if isinstance(vp, str) and vp.lower() == "remote":
+    if ld.get("jobLocationType") == "TELECOMMUTE" or isinstance(vp, str) and vp.lower() == "remote":
         d.workplace_arrangement = "remote"
     elif d.workplace_arrangement is None:
         combined = f"{d.title or ''} {d.description_text or ''}"
@@ -185,7 +207,14 @@ def _json_ld_to_detail(ld: dict, base_url: str) -> ExtractedDetail:
         d.application_url = urljoin(base_url, app) if app else None
     pts = ld.get("percentOfWeeklyHours")
     if pts is not None and d.employment_type is None:
-        d.employment_type = "part_time" if int(pts) < 80 else "full_time"
+        try:
+            d.employment_type = "part_time" if int(pts) < 80 else "full_time"
+        except (ValueError, TypeError):
+            d.extraction_errors.append("invalid_percent_of_weekly_hours")
+    for key, attr in (("skills", "required_skills"), ("qualifications", "education_requirements"), ("experienceRequirements", "experience_years")):
+        value = ld.get(key)
+        if isinstance(value, str):
+            setattr(d, attr, [value] if attr == "required_skills" else value)
     d.extraction_confidence = 0.9
     return d
 
@@ -193,7 +222,18 @@ def _json_ld_to_detail(ld: dict, base_url: str) -> ExtractedDetail:
 def _clean_description(text: Optional[str]) -> Optional[str]:
     if not text:
         return None
-    text = strip_html(text) if "<" in text else text
+    if not isinstance(text, str):
+        return None
+    text = unescape(text)
+    if "<" in text:
+        soup = BeautifulSoup(unescape(text), "html.parser")
+        for elem in soup.select("script,style,nav,header,footer,aside,form,[role=banner],[role=navigation],.cookie-banner,.advertisement"):
+            elem.decompose()
+        for li in soup.find_all("li"):
+            li.insert_before("\n- ")
+        text = soup.get_text("\n", strip=True)
+    text = unescape(text)
+    text = "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines())
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     if not text:
         return None
@@ -210,22 +250,37 @@ def _html_to_detail(html: str, base_url: str) -> ExtractedDetail:
         d.title = og_title["content"].strip()
     if not d.title and soup.title and soup.title.string:
         d.title = soup.title.string.strip()[:200]
+    for elem in soup.select("script,style,nav,header,footer,aside,form,[role=banner],[role=navigation],.cookie-banner,.advertisement"):
+        elem.decompose()
 
     # Description: og:description, then article / class heuristics
     og_desc = soup.find("meta", attrs={"property": "og:description"})
     cand: Optional[str] = None
-    if og_desc and og_desc.get("content"):
-        cand = og_desc["content"]
+    # Prefer actual job content over the site's search/social summary.
     if not cand:
         art = soup.find("article")
         if art and len(art.get_text(" ", strip=True)) > 80:
-            cand = art.get_text("\n", strip=True)
+            cand = str(art)
     if not cand:
         for cls in ("job-description", "job_description", "description", "jobdetails", "edit-block-body"):
             div = soup.find(attrs={"class": re.compile(cls, re.I)})
             if div and len(div.get_text(" ", strip=True)) > 80:
-                cand = div.get_text("\n", strip=True)
+                cand = str(div)
                 break
+    if not cand:
+        main = soup.find("main")
+        if main and len(main.get_text(" ", strip=True)) > 150:
+            cand = str(main)
+    if not cand and og_desc and og_desc.get("content"):
+        cand = og_desc["content"]
+        d.extraction_method = "metadata"
+    if not cand:
+        meta = soup.find("meta", attrs={"name": "description"})
+        if meta and meta.get("content"):
+            cand = meta["content"]
+            d.extraction_method = "metadata"
+    if d.extraction_method != "metadata":
+        d.extraction_method = "html"
     if not cand:
         for sec in soup.find_all(["section", "div"]):
             txt = sec.get_text(" ", strip=True)
@@ -321,43 +376,144 @@ def extract_from_html(html: str, base_url: str) -> ExtractedDetail:
     """Extract structured fields from already-fetched HTML (no network)."""
     if not html:
         return ExtractedDetail(extraction_confidence=0.0)
+    candidates = []
+    errors = []
     try:
         ld = _extract_json_ld(html)
         if ld:
-            return _json_ld_to_detail(ld, base_url)
-    except Exception:
-        logger.debug("JSON-LD extraction failed", exc_info=True)
+            candidates.append(_json_ld_to_detail(ld, base_url))
+    except (ValueError, TypeError, AttributeError):
+        errors.append("json_ld_invalid")
+        logger.warning("JSON-LD extraction failed")
+    # Common embedded application data (Next.js and JSON script payloads).
+    soup = BeautifulSoup(html, "html.parser")
+    for script in soup.find_all("script"):
+        if script.get("type") == "application/ld+json":
+            continue
+        if script.get("id") == "__NEXT_DATA__" or script.get("type") == "application/json":
+            try:
+                data = json.loads(script.string or script.get_text())
+                for node in _nodes(data):
+                    desc = node.get("descriptionHtml") or node.get("descriptionPlain") or node.get("jobDescription") or node.get("description")
+                    title = node.get("title") or node.get("jobTitle")
+                    if isinstance(desc, str) and isinstance(title, str) and len(desc) > 80:
+                        d = _json_ld_to_detail({"title": title, "description": desc}, base_url)
+                        d.json_ld_present = False
+                        d.extraction_method = "embedded_json"
+                        candidates.append(d)
+            except (ValueError, TypeError):
+                errors.append("embedded_json_invalid")
     try:
-        return _html_to_detail(html, base_url)
-    except Exception:
-        logger.debug("HTML extraction failed", exc_info=True)
-        return ExtractedDetail(extraction_confidence=0.0)
+        candidates.append(_html_to_detail(html, base_url))
+    except (ValueError, TypeError, AttributeError):
+        errors.append("html_invalid")
+    if not candidates:
+        return ExtractedDetail(extraction_errors=errors)
+    # Incomplete structured data must not hide a substantive body description.
+    d = max(candidates, key=lambda x: (len(x.description_text or "") > 300, x.extraction_method != "metadata", len(x.description_text or "")))
+    for other in candidates:
+        for attr in ("title", "employer", "location", "salary_raw", "salary_min", "salary_max", "salary_currency", "employment_type", "workplace_arrangement", "posted_date", "closing_date", "application_url"):
+            if not getattr(d, attr) and getattr(other, attr):
+                setattr(d, attr, getattr(other, attr))
+    d.raw_content = html[:MAX_RESPONSE_BYTES]
+    d.extraction_errors.extend(errors)
+    return finalize_detail(d)
+
+
+def finalize_detail(d: ExtractedDetail) -> ExtractedDetail:
+    from services.job_intelligence import description_quality, extract_requirements
+    from database.models import Job
+    for attr in ("title", "employer", "description_text", "location", "salary_raw", "salary_currency", "employment_type", "workplace_arrangement", "posted_date", "closing_date", "experience_years", "education_requirements", "application_url"):
+        value = getattr(d, attr)
+        if value is not None and not isinstance(value, str):
+            setattr(d, attr, None)
+            d.extraction_errors.append(f"invalid_{attr}")
+    for attr in ("salary_min", "salary_max"):
+        value = getattr(d, attr)
+        if value is not None and type(value) not in (int, float):
+            setattr(d, attr, None)
+            d.extraction_errors.append(f"invalid_{attr}")
+    d.extraction_status, d.description_completeness = description_quality(d.description_text, d.extraction_method)
+    if len(d.description_text or "") >= MAX_DESCRIPTION_CHARS:
+        d.extraction_status = "PARTIAL"
+        d.description_completeness = min(.65, d.description_completeness)
+        d.extraction_errors.append("description_truncated")
+    # Preserve low-level confidence for compatibility, but never equate metadata with completeness.
+    if not d.description_text:
+        d.extraction_confidence = min(d.extraction_confidence, .25)
+    if d.extraction_method == "metadata":
+        d.extraction_confidence = min(d.extraction_confidence, .35)
+    if d.description_text:
+        job = Job(description=d.description_text, required_skills_json=json.dumps(d.required_skills), preferred_skills_json=json.dumps(d.preferred_skills),
+                  experience_requirements=d.experience_years, education_requirements=d.education_requirements, location=d.location)
+        d.structured_requirements = extract_requirements(job)
+    return d
 
 
 def fetch_and_extract(url: str, client=None) -> ExtractedDetail:
     """Fetch the detail page safely and extract. Returns empty result on failure."""
     if not url:
-        return ExtractedDetail(extraction_confidence=0.0)
+        return ExtractedDetail(extraction_errors=["missing_url"])
+    from services.robots import is_allowed_by_robots
+    from services.ats_detail import fetch_ats_detail
+    from config.settings import get_config
+    if not is_allowed_by_robots(url, client=client):
+        return ExtractedDetail(extraction_errors=["robots_disallowed_or_unavailable"], extraction_status="NEEDS_MANUAL_REVIEW")
+    from services.robots import wait_for_crawl_slot
+    wait_for_crawl_slot(url)
+    errors = []
+    try:
+        ats = fetch_ats_detail(url, client=client)
+        if ats and ats.description_text:
+            return ats
+        if ats:
+            errors.extend(ats.extraction_errors)
+    except Exception as exc:
+        errors.append(f"ats_fetch_failed:{type(exc).__name__}")
     try:
         result = safe_get(
             url,
             timeout=15.0,
             max_bytes=MAX_RESPONSE_BYTES,
             client=client,
+            redirect_policy=lambda target: is_allowed_by_robots(target, client=client),
         )
-    except Exception:
-        logger.warning("detail fetch failed (network/validation) %s", url)
-        return ExtractedDetail(extraction_confidence=0.0)
+    except Exception as exc:
+        logger.warning("Detail fetch failed: %s", type(exc).__name__)
+        return ExtractedDetail(extraction_errors=errors + [f"fetch_failed:{type(exc).__name__}"])
     if result.status_code != 200 or not result.content:
-        logger.warning("detail fetch %s -> HTTP %s", url, result.status_code)
-        return ExtractedDetail(extraction_confidence=0.0)
+        logger.warning("Detail fetch HTTP %s", result.status_code)
+        return ExtractedDetail(extraction_errors=errors + [f"http_{result.status_code}"], extraction_status="NEEDS_MANUAL_REVIEW" if result.status_code in {401, 403, 429} else "UNAVAILABLE")
     ctype = result.headers.get("content-type", "") if result.headers else ""
     content = result.content.decode("utf-8", errors="replace")
     if "json" in ctype:
         try:
             data = json.loads(content)
-            data["@type"] = data.get("@type", "JobPosting")
-            return _json_ld_to_detail(data, url)
-        except (json.JSONDecodeError, ValueError):
-            pass
-    return extract_from_html(content, url)
+            if isinstance(data, dict) and "jobposting" in str(data.get("@type", "")).lower():
+                detail = _json_ld_to_detail(data, url)
+                detail.raw_content = content
+                return finalize_detail(detail)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            errors.append("json_endpoint_invalid")
+    soup = BeautifulSoup(content, "html.parser")
+    title = soup.title.get_text().lower() if soup.title else ""
+    if any(x in title for x in ("captcha", "access denied", "sign in", "just a moment")):
+        return ExtractedDetail(extraction_status="NEEDS_MANUAL_REVIEW", extraction_errors=errors + ["access_restricted"])
+    detail = extract_from_html(content, url)
+    if getattr(result, "error", None):
+        detail.extraction_errors.append("retrieval_incomplete")
+        detail.extraction_status = "PARTIAL" if detail.description_text else "UNAVAILABLE"
+        detail.description_completeness = min(.65, detail.description_completeness)
+    detail.extraction_errors.extend(errors)
+    if get_config().enable_playwright and detail.extraction_status != "COMPLETE":
+        try:
+            from services.browser_extraction import render_public_page
+            rendered = extract_from_html(render_public_page(url), url)
+            if len(rendered.description_text or "") > len(detail.description_text or ""):
+                rendered.extraction_method = "browser"
+                rendered.extraction_errors.extend(detail.extraction_errors)
+                detail = finalize_detail(rendered)
+        except Exception as exc:
+            detail.extraction_errors.append(f"browser_unavailable:{type(exc).__name__}")
+            logger.warning("Browser extraction unavailable: %s", type(exc).__name__)
+    return detail

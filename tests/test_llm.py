@@ -200,7 +200,7 @@ def test_refusal_empty_and_sdk_errors_become_llm_errors(monkeypatch):
     with pytest.raises(llm.LLMError, match="empty response"):
         ai.complete("SYS", "hi")
     ai._client = NS(messages=NS(create=_Rec(RuntimeError("quota\nexceeded"))))
-    with pytest.raises(llm.LLMError, match="anthropic:claude-haiku-5-5 : quota exceeded"):
+    with pytest.raises(llm.LLMError, match=r"anthropic:claude-haiku-5-5: request_failed \(RuntimeError\)"):
         ai.complete("SYS", "hi")
     with pytest.raises(llm.LLMError):
         _ai(monkeypatch, AI_PROVIDER="skynet").complete("SYS", "hi")
@@ -338,30 +338,32 @@ def scoring(monkeypatch):
 def test_deterministic_score_handles_experienced_intern(sample_profile, sample_job_factory):
     # used to raise AttributeError ('bool' has no .lower()) for this exact pair
     result = ai_client.deterministic_score(sample_profile, Job(**sample_job_factory()))
-    assert result["experience_fit"] == "good" and result["ai_model"] == "deterministic-fallback"
+    assert result["experience_fit"] == "unknown" and result["ai_model"] == "deterministic-fallback"
+    assert result["total_score"] is None  # the fixture has only a snippet
 
 
-def test_model_score_is_normalized_and_cached(scoring, sample_profile, sample_job_factory):
+def test_legacy_model_percentage_is_rejected_without_caching(scoring, sample_profile, sample_job_factory):
     mk, store = scoring
     reply = json.dumps({"total_score": 0.9, "experience_fit": "GREAT", "evidence": "one string",
                         "confidence": "high", "title_relevance": "exact"})
     client = mk(reply)
-    result = client.score_job_fit(sample_profile, Job(**sample_job_factory()))
-    assert result["total_score"] == 0  # 0..100 scale only; 0.9 is not 90
-    assert result["experience_fit"] == "great" and result["evidence"] == ["one string"]
-    assert result["ai_model"] == "fake:m1" and result["title_relevance"] == "exact"
-    assert len(store) == 1
+    from services.ai_diagnostics import SAMPLE_JD
+    result = client.score_job_fit(sample_profile, Job(**sample_job_factory(description=SAMPLE_JD)))
+    assert result["ai_model"] == "deterministic-fallback"
+    assert result["fallback_reason"] == "invalid response"
+    assert store == {}
     prompt = client._ai.prompts[0]
     assert "alex.smith@example.com" not in prompt and "000-000-0000" not in prompt
-    assert '"enum": ["great", "good", "poor", "bad"]' in prompt
+    assert '"description"' in prompt and "source_quote" in prompt
 
 
 def test_failed_model_call_falls_back_without_caching(scoring, sample_profile, sample_job_factory):
     mk, store = scoring
-    result = mk(llm.LLMError("quota")).score_job_fit(sample_profile, Job(**sample_job_factory()))
-    assert result["ai_model"] == "deterministic-fallback" and "model_error: quota" in result["notes"]
+    from services.ai_diagnostics import SAMPLE_JD
+    result = mk(llm.LLMError("quota")).score_job_fit(sample_profile, Job(**sample_job_factory(description=SAMPLE_JD)))
+    assert result["ai_model"] == "deterministic-fallback" and result["fallback_reason"]
     assert store == {}
-    result = mk('{"no": "score"}').score_job_fit(sample_profile, Job(**sample_job_factory()))
+    result = mk('{"no": "score"}').score_job_fit(sample_profile, Job(**sample_job_factory(description=SAMPLE_JD)))
     assert result["ai_model"] == "deterministic-fallback" and store == {}
 
 
@@ -390,7 +392,7 @@ def test_openai_base_url_needs_no_key_but_openai_itself_does(monkeypatch):
 
 def test_compat_chat_echoes_reasoning_content(monkeypatch):
     _sdk(monkeypatch)
-    ai = _ai(monkeypatch, AI_PROVIDER="openai", OPENAI_BASE_URL="https://api.deepseek.com", AI_MODEL="deepseek-x")
+    ai = _ai(monkeypatch, AI_PROVIDER="openai", OPENAI_API_KEY="test-key", OPENAI_BASE_URL="https://api.deepseek.com", AI_MODEL="deepseek-x")
     tc = NS(id="t1", type="function", function=NS(name="get_status", arguments="{}"))
     create = _Rec(NS(choices=[NS(message=NS(content="", reasoning_content="think", tool_calls=[tc]))]),
                   NS(choices=[NS(message=NS(content="ok", tool_calls=None))]))
@@ -400,7 +402,7 @@ def test_compat_chat_echoes_reasoning_content(monkeypatch):
     assert create.calls[1]["messages"][2]["reasoning_content"] == "think"
 
 
-def test_repeated_model_failures_stop_calling_the_provider(scoring, monkeypatch, sample_profile, sample_job_factory):
+def test_repeated_model_failures_do_not_permanently_disable_provider(scoring, monkeypatch, sample_profile, sample_job_factory):
     _sdk(monkeypatch)
     calls = []
 
@@ -411,7 +413,8 @@ def test_repeated_model_failures_stop_calling_the_provider(scoring, monkeypatch,
     client = ai_client.AIClient()
     client._ai = _ai(monkeypatch, ANTHROPIC_API_KEY="a", AI_MODEL="claude-haiku-5-5")
     client._ai._client = NS(messages=NS(create=boom))
+    from services.ai_diagnostics import SAMPLE_JD
     for i in range(4):
-        result = client.score_job_fit(sample_profile, Job(**sample_job_factory(title=f"Data Intern {i}")))
+        result = client.score_job_fit(sample_profile, Job(**sample_job_factory(title=f"Data Intern {i}", description=SAMPLE_JD)))
         assert result["ai_model"] == "deterministic-fallback"
-    assert len(calls) == 2 and not client.is_configured
+    assert len(calls) == 4 and client.is_configured

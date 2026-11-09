@@ -216,6 +216,9 @@ def cmd_ai_check(args) -> None:
     from services.ai_client import AIClient
 
     info = AIClient().health_check()
+    if getattr(args, "verbose", False):
+        from services.ai_diagnostics import probe
+        info = probe("connectivity")
     term.heading("AI health")
     term.kv([(k, v) for k, v in info.items()])
     term.heading("Providers")
@@ -223,7 +226,42 @@ def cmd_ai_check(args) -> None:
                headers={"default_model": "default model"})
     term.info("Pick one with AI_PROVIDER and a model with AI_MODEL (`quackers env`).")
     if info.get("status") != "AI_HEALTH_OK":
-        term.warn("No AI provider is ready; deterministic scoring will be used.")
+        if info.get("status") != "PASSED":
+            term.warn("AI unavailable or untested; see diagnostics above.")
+    term.info("Connectivity does not verify extraction, matching or tailoring. Use `quackers ai-test <capability>`.")
+    if getattr(args, "verbose", False) and info.get("status") == "FAILED":
+        raise CliError("AI connectivity check failed")
+
+
+def cmd_ai_test(args) -> None:
+    from services.ai_diagnostics import probe
+    result = probe(args.capability)
+    term.kv(result.items())
+    if result["status"] != "PASSED":
+        raise CliError(f"AI {args.capability} capability failed; no fallback counted as success")
+
+
+def cmd_job_extract(args) -> None:
+    from services.enrichment_service import enrich_missing_jobs
+    with store.with_session() as session:
+        job = _require_job(session, args.job_id)
+        if args.force:
+            job.extracted_at = None
+        summary = enrich_missing_jobs(session, load_config(), job_ids=[job.id])
+        term.kv([("attempted", summary.attempted), ("status", job.extraction_status),
+                 ("method", job.extraction_method), ("completeness", job.description_completeness),
+                 ("errors", job.extraction_errors_json or "[]")])
+
+
+def cmd_match(args) -> None:
+    from services.matching import evaluate_jobs
+    profile = _require_active_profile()
+    with store.with_session() as session:
+        jobs = [_require_job(session, args.job_id)] if args.job_id else db.list_jobs(session)
+    results = evaluate_jobs(jobs, profile)
+    for job, result in results:
+        term.kv([("job", job.id), ("status", result["scoring_status"]), ("score", result["total_score"]),
+                 ("confidence", result["confidence"]), ("evidence coverage", result["evidence_coverage"])])
 
 
 # ---------------------------------------------------------------------------
@@ -484,12 +522,46 @@ def cmd_jobs(args) -> None:
     term.info(f"\n{len(rows)} job(s). Details: `quackers job <id>`.")
 
 
+def _print_match_report(report: Dict[str, Any]) -> None:
+    """Readable category scores and full source evidence, with unknowns kept distinct."""
+    if report.get("scoring_method") != "weighted-evidence-v2":
+        term.kv(report.items(), indent=4)
+        return
+    term.kv([
+        ("Scoring status", report.get("scoring_status")),
+        ("Method", report.get("scoring_method")),
+        ("Confidence", report.get("confidence")),
+        ("Evidence coverage", f"{100 * report.get('evidence_coverage', 0):.0f}%"),
+        ("Possible score range", report.get("score_range")),
+        ("Fallback reason", report.get("fallback_reason") or "none"),
+    ])
+    categories = []
+    for name, category in report.get("category_scores", {}).items():
+        categories.append({"category": name.replace("_", " "),
+            "score": category["score"] if category.get("score") is not None else "unknown" if category.get("applicable") else "n/a",
+            "weight": category.get("weight"), "known": category.get("known"), "unknown": category.get("unknown")})
+    term.table(categories, ["category", "score", "weight", "known", "unknown"])
+    term.paragraph(report.get("explanation") or "")
+    for row in report.get("requirement_matrix", []):
+        term.paragraph(f"{row['status']} [{row['category']}] {row['text']}", indent=4)
+        term.paragraph(f"Job evidence: {row.get('source_quote') or row['text']}", indent=6)
+        for fact in row.get("evidence", []):
+            term.paragraph(f"Candidate evidence ({fact['field']}): {fact['quote']}", indent=6)
+            term.paragraph(f"Source: {fact.get('source', 'profile')}; provenance: {fact.get('status', 'unknown')}", indent=6)
+    for key, label in (("transferable_skills", "Transferable evidence"), ("potential_weaknesses", "Potential weaknesses")):
+        if report.get(key):
+            term.info(label + ":")
+            for item in report[key]:
+                term.paragraph(item, indent=4)
+
+
 def cmd_job(args) -> None:
     with store.with_session() as session:
         job = _require_job(session, args.job_id)
         profile = db.get_active_candidate_profile(session)
         match = db.get_match_for_job(
-            session, job.id, profile_version=profile.profile_version if profile else None
+            session, job.id, profile_version=profile.profile_version if profile else None,
+            candidate_profile_id=profile.id if profile else None,
         )
         app = db.get_application_state(session, job.id)
         data = store.job_to_dict(job)
@@ -518,16 +590,18 @@ def cmd_job(args) -> None:
         ("Last seen", data["last_seen"]),
         ("Original URL", data["original_url"]),
         ("Apply URL", data["application_url"] or "—"),
+        ("Extraction status", data.get("extraction_status") or "not assessed"),
+        ("Extraction method", data.get("extraction_method") or "unknown"),
     ])
 
     term.heading("Match")
     if match is None:
         term.info("  Not scored yet (run a scan with an active profile).")
     else:
-        score = max(0.0, min(100.0, float(match.match_score or 0)))
-        verdict = "strong" if score >= 80 else "moderate" if score >= 60 else "weak"
+        score = max(0.0, min(100.0, float(match.match_score))) if match.match_score is not None else None
+        verdict = "insufficient information" if score is None else "strong" if score >= 80 else "moderate" if score >= 60 else "weak"
         term.kv([
-            ("Score", f"{score:.0f}/100 ({verdict})"),
+            ("Score", f"{score:.0f}/100 ({verdict})" if score is not None else "Unavailable: insufficient information"),
             ("Model", match.ai_model or "—"),
             ("Profile version", match.profile_version),
             ("Evaluated", store.dt_short(match.evaluated_at)),
@@ -535,7 +609,7 @@ def cmd_job(args) -> None:
         breakdown = _json_get(match.score_json) or {}
         if isinstance(breakdown, dict) and breakdown:
             term.info("  Breakdown:")
-            term.kv(breakdown.items(), indent=4)
+            _print_match_report(breakdown)
         evidence = _json_get(match.matching_evidence_json) or []
         if evidence:
             term.info("  Why:")
@@ -718,6 +792,26 @@ def cmd_docs_cv(args) -> None:
     from services.ai_client import deterministic_score
 
     profile = _require_active_profile()
+    if getattr(args, "tailored", False):
+        from services.tailored_cv import build_tailored_cv, digest
+        from services import llm
+        from config.settings import get_config
+        with store.with_session() as session:
+            job = _require_job(session, args.job_id)
+            ai = llm.get() if get_config().enable_ai_direction else None
+            try:
+                draft = build_tailored_cv(profile, job, ai=ai)
+            except ValueError as exc:
+                raise CliError(str(exc)) from exc
+        import uuid
+        path = store.get_output_dir() / f"tailored_cv_{args.job_id}_{uuid.uuid4().hex[:8]}.json"
+        path.write_text(json.dumps(draft, ensure_ascii=False, indent=2), encoding="utf-8")
+        doc_id = _record_doc(args.job_id, "tailored_cv", path, profile, json.dumps({"draft_hash": digest(draft)}))
+        term.ok(f"CV draft saved as document #{doc_id}: {path}")
+        term.info(f"Review: quackers docs show {doc_id}; approve: quackers docs approve {doc_id}; export: quackers docs export {doc_id} cv.docx")
+        if args.show:
+            term.paragraph(draft["tailored_cv"] + "\nChanges:\n" + "\n".join(draft["changes"]) + "\nUnsupported:\n" + "\n".join(draft["unsupported_requirements"]))
+        return
     with store.with_session() as session:
         job = _require_job(session, args.job_id)
         match_data = deterministic_score(profile, job)
@@ -811,15 +905,57 @@ def cmd_docs_export(args) -> None:
         dest = dest / src.name
     if dest.exists() and not term.confirm(f"{dest} exists. Overwrite?", assume_yes=args.yes):
         raise CliError("Not exported.")
-    shutil.copyfile(src, dest)
+    with store.with_session() as session:
+        from database.models import CandidateProfile
+        protected = []
+        for p in session.query(CandidateProfile):
+            other = _json_get(p.other_json) or {}
+            protected.extend(x for x in (p.cv_path, other.get("original_cv_path") if isinstance(other, dict) else None) if isinstance(x, str) and x)
+        if any(Path(p).resolve() == dest.resolve() for p in protected):
+            raise CliError("Cannot overwrite an original CV")
+    if doc.doc_type == "tailored_cv":
+        if not doc.approved:
+            raise CliError("Review and approve the CV draft before exporting")
+        from services.tailored_cv import digest
+        from documents.exporter import export_cv_text
+        draft = _validated_draft(doc)
+        meta = _json_get(doc.notes) or {}
+        if meta.get("approved_hash") != digest(draft):
+            raise CliError("Draft changed since approval; review and approve it again")
+        try:
+            export_cv_text(draft["tailored_cv"], dest)
+        except (ValueError, OSError) as exc:
+            raise CliError(str(exc)) from exc
+    else:
+        shutil.copyfile(src, dest)
     term.ok(f"Exported to {dest}")
 
 
 def cmd_docs_approve(args) -> None:
     with store.with_session() as session:
         doc = _get_doc(session, args.doc_id)
+        if doc.doc_type == "tailored_cv":
+            from services.tailored_cv import digest
+            meta = _json_get(doc.notes) or {}
+            meta["approved_hash"] = None if args.undo else digest(_validated_draft(doc))
+            doc.notes = json.dumps(meta)
         db.mark_doc_approved(session, doc, approved=not args.undo)
     term.ok(f"Document {args.doc_id} {'unapproved' if args.undo else 'approved'}.")
+
+
+def _validated_draft(doc):
+    from services.tailored_cv import validate_draft
+    try:
+        draft = json.loads(Path(doc.file_path).read_text(encoding="utf-8"))
+        with store.with_session() as session:
+            profile = db.get_candidate_profile(session, draft["profile_id"])
+            job = _require_job(session, doc.job_id)
+            if profile is None or profile.profile_version != doc.profile_version:
+                raise ValueError("Source profile is missing or changed")
+            validate_draft(draft, profile, job)
+        return draft
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise CliError(f"CV draft validation failed: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -839,16 +975,21 @@ def _profile_form(p) -> Dict[str, Any]:
         "skills": list(p.skills),
         "certifications": list(p.certifications),
         "achievements": list(p.achievements),
-        "experience": _lines(p.experience),
-        "education": _lines(p.education),
-        "projects": _lines(p.projects),
-        "languages": _lines(p.languages),
+        "experience": p.experience,
+        "education": p.education,
+        "projects": p.projects,
+        "languages": p.languages,
         "cv_path": p.cv_path or "",
         "other": _json_get(p.other_json) or {},
     }
 
 
 def _form_to_fields(form: Dict[str, Any]) -> Dict[str, Any]:
+    def entries(key: str) -> List[Dict[str, Any]]:
+        value = form.get(key) or []
+        if isinstance(value, str):
+            value = value.splitlines()
+        return [dict(v) if isinstance(v, dict) else {"text": str(v).strip()} for v in value if v]
     def as_list(key: str) -> List[str]:
         value = form.get(key) or []
         if isinstance(value, str):
@@ -874,10 +1015,10 @@ def _form_to_fields(form: Dict[str, Any]) -> Dict[str, Any]:
         "skills": as_list("skills"),
         "certifications": as_list("certifications"),
         "achievements": as_list("achievements"),
-        "experience": _bullets(as_lines("experience")),
-        "education": _bullets(as_lines("education")),
-        "projects": _bullets(as_lines("projects")),
-        "languages": _bullets(as_lines("languages")),
+        "experience": entries("experience"),
+        "education": entries("education"),
+        "projects": entries("projects"),
+        "languages": entries("languages"),
         "cv_path": form.get("cv_path") or None,
         "other": form.get("other") if isinstance(form.get("other"), dict) and form.get("other") else None,
     }
@@ -925,6 +1066,8 @@ def cmd_profile_show(args) -> None:
             term.info(f"  {key.capitalize()}:")
             term.bullets(form[key], indent=4)
     for key, val in (form.get("other") or {}).items():
+        if key.startswith("_") or key == "provenance":
+            continue
         if val:
             term.kv([(key.replace("_", " ").capitalize(),
                       ", ".join(map(str, val)) if isinstance(val, list) else val)])
@@ -963,7 +1106,12 @@ def cmd_profile_import(args) -> None:
     except Exception as exc:  # noqa: BLE001
         raise CliError(f"Could not parse CV: {exc}") from exc
 
-    form = _extraction_form(extraction, saved, src.name)
+    if extraction.get("method") == "json":
+        form = dict(extraction["fields"], cv_path=str(saved))
+        form.setdefault("other", {}).update(_source_text=extraction["raw_text"], _source_path=str(saved))
+    else:
+        form = _extraction_form(extraction, saved, src.name)
+    form.setdefault("other", {})["original_cv_path"] = str(src.resolve())
     term.ok(f"Parsed {src.name} (copy stored at {saved}).")
     _review_and_save(form, edit=args.edit, yes=args.yes, inactive=args.inactive)
 
@@ -997,11 +1145,12 @@ def _extraction_form(extraction: Dict[str, Any], saved: Path, label: str) -> Dic
         "certifications": _split_list(fields.get("_certifications_raw") or ""),
         "achievements": _split_list(fields.get("_achievements_raw") or ""),
         # Entries group a job's title line with its bullet details.
-        "experience": fields.get("experience_entries") or raw_lines("_experience_raw"),
-        "education": fields.get("education_entries") or raw_lines("_education_raw"),
+        "experience": fields.get("structured_experience") or fields.get("experience_entries") or raw_lines("_experience_raw"),
+        "education": fields.get("structured_education") or fields.get("education_entries") or raw_lines("_education_raw"),
         "projects": raw_lines("_projects_raw"),
         "languages": raw_lines("_languages_raw"),
         "cv_path": str(saved),
+        "other": {"_source_text": extraction.get("raw_text") or "", "_source_path": str(saved)},
     }
     if form["name"] == "Unknown":
         form["name"] = ""  # never save a made-up name
@@ -1084,7 +1233,14 @@ def _review_and_save(form: Dict[str, Any], *, edit: bool = False, yes: bool = Fa
         question = "\nSave as a new profile?"
     if not term.confirm(question, assume_yes=yes):
         raise CliError("Not saved.")
-    p = cp.upsert_from_extraction(_form_to_fields(form), active=not inactive)
+    from services.candidate_intelligence import provenance
+    fields = _form_to_fields(form)
+    other = dict(fields.get("other") or {})
+    source_text = other.pop("_source_text", "")
+    source_path = other.pop("_source_path", fields.get("cv_path") or "user input")
+    other["provenance"] = provenance(fields, raw_text=source_text, source=source_path, confirmed=True)
+    fields["other"] = other
+    p = cp.upsert_from_extraction(fields, active=not inactive)
     term.ok(f"Created profile #{p.id} (v{p.profile_version}){'' if inactive else ', active'}.")
     return p
 
@@ -1143,7 +1299,10 @@ def cmd_cv(args) -> None:
     if suffix == ".json":
         if path.stat().st_size > MAX_CV_BYTES:
             raise CliError("File too large (max 15 MB).")
-        _review_and_save(_load_cv_json(path), edit=edit, yes=yes)
+        saved = _store_cv_copy(path)
+        form = _load_cv_json(saved)
+        form.setdefault("other", {}).update(_source_text=saved.read_text(encoding="utf-8-sig"), _source_path=str(saved), original_cv_path=str(path))
+        _review_and_save(form, edit=edit, yes=yes)
     elif suffix in {".pdf", ".docx"}:
         cmd_profile_import(argparse.Namespace(
             cv_file=str(path), edit=edit, inactive=False, yes=yes))
@@ -1573,7 +1732,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_status)
 
     s = sub.add_parser("ai-check", help="show the active AI provider/model and every supported provider")
+    s.add_argument("--verbose", action="store_true", help="contact the provider using synthetic data")
     s.set_defaults(func=cmd_ai_check)
+    s = sub.add_parser("ai-test", help="test an AI capability independently with synthetic data")
+    s.add_argument("capability", choices=["extraction", "matching", "tailoring"])
+    s.set_defaults(func=cmd_ai_test)
+    s = sub.add_parser("job-extract", help="retrieve a stored job's description and show extraction diagnostics")
+    s.add_argument("job_id", type=int)
+    s.add_argument("--force", action="store_true", help="refresh before the normal cache TTL")
+    s.set_defaults(func=cmd_job_extract)
+    s = sub.add_parser("match", help="score stored jobs using the active candidate profile")
+    s.add_argument("job_id", type=int, nargs="?")
+    s.set_defaults(func=cmd_match)
 
     s = sub.add_parser("scan", help="discover new jobs with the live search config")
     s.add_argument("--no-ai", action="store_true", help="skip AI scoring (deterministic only)")
@@ -1656,6 +1826,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = docs.add_parser("cv", help="generate CV tailoring suggestions for a job")
     s.add_argument("job_id", type=int)
     s.add_argument("--show", action="store_true", help="print the result")
+    s.add_argument("--tailored", action="store_true", help="create a factual CV draft with comparison and approval")
     s.set_defaults(func=cmd_docs_cv)
     s = docs.add_parser("cover-letter", help="generate a cover letter for a job")
     s.add_argument("job_id", type=int)

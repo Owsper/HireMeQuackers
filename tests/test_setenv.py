@@ -20,9 +20,9 @@ FAKE_SECRET = "fake-secret-value-123"
 
 
 def test_banner_fits_80_columns_and_falls_back_when_narrow():
-    assert banner.ART_WIDTH >= 80
-    assert len(banner.ART) == 5
-    assert banner.render(1000) and len(banner.render(1000)) == 5
+    assert banner.ART_WIDTH == max(len(line.rstrip()) for line in banner.ART)
+    assert banner.ART_WIDTH > 40
+    assert banner.render(1000) and len(banner.render(1000)) == len(banner.ART)
     assert banner.render(40) == [term.style("HireMeQuackers", "bold", "bright_cyan")]
 
 

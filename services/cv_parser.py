@@ -71,6 +71,19 @@ def parse_cv(path: str | Path, *, extract_sections: bool = True) -> Dict[str, An
     "docx", "ocr" or "fallback") and ``notes`` (human-readable caveats).
     """
     p = Path(path)
+    if p.suffix.lower() == ".json":
+        import json
+        from services.cv_validation import normalize_json_cv, validate_form
+        data = json.loads(p.read_text(encoding="utf-8-sig"))
+        if not isinstance(data, dict):
+            raise ValueError("JSON CV must be an object")
+        fields, unknown = normalize_json_cv(data)
+        validation = validate_form(fields)
+        if validation.errors:
+            raise ValueError("Invalid JSON CV: " + "; ".join(validation.errors))
+        return {"cv_path": str(p), "raw_text": json.dumps(fields, ensure_ascii=False), "fields": fields,
+                "confidence": {k: "high" if v == "ok" else "missing" for k, v in validation.status.items()},
+                "method": "json", "notes": ["Unknown fields: " + ", ".join(unknown)] if unknown else []}
     text, method, notes = _read_raw_ex(p)
     fields = _split_sections(text) if extract_sections else {}
     confidence = dict(fields.get("_confidence", {}))
@@ -131,15 +144,14 @@ def _read_raw_ex(p: Path) -> Tuple[str, str, List[str]]:
                                      "check every field before saving.")
             finally:
                 doc.close()
-            logger.info("PDF parsed via PyMuPDF (%s): %d chars (%s)", method, len(text), p.name)
+            logger.info("PDF parsed via PyMuPDF (%s): %d chars", method, len(text))
             return text, method, notes
         except Exception:
             # Parse-time failure (not a missing library): encrypted or
             # corrupt PDF. Fall back to the crude regex extractor with a
             # loud warning so the user knows it's low-quality.
             logger.warning(
-                "PyMuPDF open/read failed for %s; using low-quality fallback",
-                p.name,
+                "PyMuPDF open/read failed; using low-quality fallback",
             )
             data = p.read_bytes()
             notes.append("PDF could not be opened normally; low-quality fallback used.")
@@ -263,7 +275,7 @@ def _pdf_blocks_text(doc) -> str:
         ]
         # Prefer type 0 (text) first; if PyMuPDF 2.0 returns only other
         # types, accept any block with a non-empty string at index 4.
-        typed = [b for b in candidates if b[6] in (0, 1)]
+        typed = [b for b in candidates if len(b) >= 7 and b[6] in (0, 1)]
         if not typed:
             # PyMuPDF 2.0 may use different type numbers; accept any
             # block whose text field (index 4) is a non-empty str.
@@ -484,6 +496,8 @@ def _split_sections(text: str) -> Dict[str, Any]:
         rest = ""
         if stripped.startswith("#"):
             key = _normalize_heading(stripped.lstrip("#").strip())
+            if key is None:
+                stripped = stripped.lstrip("#").strip()
         elif _is_heading_line(stripped):
             key = _normalize_heading(stripped)
         else:
@@ -531,10 +545,29 @@ def _split_sections(text: str) -> Dict[str, Any]:
         "_achievements_raw": joined("achievements"),
         "experience_entries": _group_entries(sections.get("experience", [])),
         "education_entries": _group_entries(sections.get("education", [])),
+        "structured_experience": [_structured_entry(x, "experience") for x in _group_entries(sections.get("experience", []))],
+        "structured_education": [_structured_entry(x, "education") for x in _group_entries(sections.get("education", []))],
         "sections_found": headings_found,
     }
     fields["_confidence"] = _confidence_for(fields, name_source=name_source)
     return fields
+
+
+def _structured_entry(text: str, kind: str) -> Dict[str, Any]:
+    """Keep exact text and dates; split employer only at an explicit at/bei delimiter."""
+    result: Dict[str, Any] = {"text": text}
+    dates = _DATE_RANGE_RE.search(text)
+    if dates:
+        result["date_range"] = dates.group(0)
+    first = text.split(" | ", 1)[0]
+    if dates:
+        first = first.replace(dates.group(0), "").strip(" ()-,")
+    employer = re.split(r"\s+(?:at|bei)\s+", first, maxsplit=1, flags=re.I)
+    if kind == "experience" and len(employer) == 2:
+        result["title"], result["employer"] = employer
+    if " | " in text:
+        result["responsibilities" if kind == "experience" else "details"] = text.split(" | ")[1:]
+    return result
 
 
 def _is_bullet(line: str) -> bool:

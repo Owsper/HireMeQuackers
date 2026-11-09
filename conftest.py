@@ -38,6 +38,7 @@ def _no_real_ai(monkeypatch):
     from config import settings
 
     monkeypatch.setattr(settings, "_ENV_LOADED", True)
+    monkeypatch.setenv("ENABLE_PLAYWRIGHT", "false")
     for name in ("AI_PROVIDER", "AI_MODEL", "GEMINI_API_KEY", "GEMINI_MODEL", "OPENAI_API_KEY", "OPENAI_BASE_URL",
                  "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "OLLAMA_BASE_URL"):
         monkeypatch.delenv(name, raising=False)

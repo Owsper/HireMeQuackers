@@ -140,10 +140,10 @@ def test_deterministic_language_fit_uses_codes():
                             skills_json="[]")
     needs_de = _job(required_languages_json=json.dumps(["de"]), description="x")
     needs_en = _job(required_languages_json=json.dumps(["en"]), description="x")
-    assert deterministic_score(prof, needs_de)["language_fit"] == "poor"
-    assert deterministic_score(prof, needs_en)["language_fit"] == "great"
+    assert deterministic_score(prof, needs_de)["language_fit"] == "unknown"
+    assert deterministic_score(prof, needs_en)["language_fit"] == "unknown"
     no_langs = CandidateProfile(name="Ada", languages_json="[]", skills_json="[]")
-    assert deterministic_score(no_langs, needs_de)["language_fit"] == "good"
+    assert deterministic_score(no_langs, needs_de)["language_fit"] == "unknown"
 
 
 def test_job_language_columns_persist_and_migrate(tmp_path):

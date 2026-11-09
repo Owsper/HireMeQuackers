@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import threading
 from collections import OrderedDict
@@ -27,19 +28,15 @@ def _get_cache_dir() -> Path:
 def getenv_temp() -> str:
     import tempfile
 
-    return tempfile.gettempdir() / "jobhunter-cache"
+    return str(Path(tempfile.gettempdir()) / "jobhunter-cache")
 
 
 def _key_to_path(key: str) -> Optional[Path]:
     # map hex digest to a safe path (cache_keys are already short 64-char hex)
     if not key or not isinstance(key, str):
         return None
-    safe = key.replace(":_", "_").replace("//", "/")
-    sanitized = "".join(c for c in safe if c.isalnum() or c in "-_/.")
-    if not sanitized:
-        return None
     d = _get_cache_dir()
-    p = d / (sanitized[:24] + ".json")
+    p = d / (hashlib.sha256(key.encode()).hexdigest() + ".json")
     return p
 
 
@@ -87,16 +84,8 @@ def invalidate_profile_prefix(pref: str) -> None:
         for k in list(_MEM.keys()):
             if k.startswith(pref):
                 _MEM.pop(k, None)
-    d = _get_cache_dir()
-    exists = d.exists() if hasattr(d, "exists") else False
-    if exists:
-        for f in d.rglob("*.json"):
-            name = f.name
-            if any(part in name for part in pref.replace("profile:", "").split(":")[:2]):
-                try:
-                    f.unlink()
-                except Exception:
-                    pass
+    # Disk keys are content hashes. A prefix cannot identify them safely;
+    # changed candidate content already yields a new key. Never guess filenames.
 
 
 def clear_all() -> None:

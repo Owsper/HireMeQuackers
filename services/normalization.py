@@ -21,13 +21,14 @@ def canonical_url(url: Optional[str]) -> str:
     if not url:
         return ""
     try:
-        from urllib.parse import urlparse
+        from urllib.parse import urlparse, parse_qsl, urlencode
 
         p = urlparse(url.strip())
         scheme = (p.scheme or "https").lower()
         netloc = (p.netloc or "").lower()
         path = p.path or "/"
-        query = p.query
+        query = urlencode(sorted((k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
+                                 if not k.lower().startswith("utm_") and k.lower() not in {"fbclid", "gclid", "ref", "source"}))
         return (scheme + "://" + netloc + path + ("?" + query if query else "")).rstrip("/")
     except Exception:
         return (url or "").strip()
@@ -59,6 +60,15 @@ def raw_to_job(raw: RawListing, existing: Optional[Job] = None) -> dict:
     emp = raw.employment_type or classify_employment_type(title)
     lang, required_langs = job_languages(raw, title, desc)
     workplace = (raw.workplace_arrangement or "unknown").strip().lower()
+    from services.job_intelligence import description_quality, extract_requirements
+    from database.models import utcnow
+    import json
+    method = "search_snippet" if (raw.search_provider or raw.source.lower() in {"websearch", "web search", "brave", "exa", "duckduckgo"}) and not raw.detail_extraction_succeeded else "source_feed"
+    extraction_status, completeness = description_quality(desc, method)
+    requirements = extract_requirements(Job(description=desc, location=location,
+        required_skills_json=json.dumps(raw.required_skills or []), preferred_skills_json=json.dumps(raw.preferred_skills or []),
+        education_requirements=raw.education_requirements, experience_requirements=raw.experience_requirements,
+        language_requirements=raw.language_requirements)) if method != "search_snippet" and desc else []
 
     return dict(
         title=title,
@@ -68,6 +78,14 @@ def raw_to_job(raw: RawListing, existing: Optional[Job] = None) -> dict:
         employment_type=emp.value,
         workplace_arrangement=workplace,
         description=desc or None,
+        extraction_status=extraction_status,
+        extraction_method=method,
+        description_completeness=completeness,
+        structured_requirements_json=json.dumps(requirements),
+        extracted_at=utcnow() if extraction_status == "COMPLETE" else None,
+        raw_description=desc_raw or None,
+        external_job_id=getattr(raw, "external_job_id", None),
+        source_type=getattr(raw, "source_type", None),
         required_skills=raw.required_skills or [],
         preferred_skills=raw.preferred_skills or [],
         experience_requirements=raw.experience_requirements,
@@ -117,15 +135,15 @@ def _coerce_date(value) -> Optional[object]:
     if not s:
         return None
     iso_like = None
-    if "T" in s or " " in s:
+    if "T" in s or " " in s or len(s) == 10:
         try:
-            from datetime import datetime
+            from datetime import datetime, timezone
 
-            iso_like = s.replace("Z", "")
+            iso_like = s.replace("Z", "+00:00")
             p = datetime.fromisoformat(iso_like)
             if p.tzinfo is None:
                 return p
-            return p.astimezone().replace(tzinfo=None)
+            return p.astimezone(timezone.utc).replace(tzinfo=None)
         except Exception:
             pass
     if "T" in s:

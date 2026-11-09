@@ -238,7 +238,12 @@ def test_build_parser_works_on_python_before_3_14(monkeypatch):
                 raise TypeError("unexpected keyword argument 'suggest_on_error'")
             super().__init__(*args, **kwargs)
 
-    monkeypatch.setattr(cli.argparse, "ArgumentParser", OldArgumentParser)
+    # argparse internally references its own ArgumentParser symbol in super().
+    # Patch the CLI's module view, not that CPython implementation global.
+    from types import SimpleNamespace
+    proxy = SimpleNamespace(**vars(argparse))
+    proxy.ArgumentParser = OldArgumentParser
+    monkeypatch.setattr(cli, "argparse", proxy)
     monkeypatch.setattr(cli.sys, "version_info", (3, 13, 0))
     args = cli.build_parser().parse_args(["guide"])
     assert args.func is not None

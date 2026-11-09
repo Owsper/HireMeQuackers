@@ -19,6 +19,8 @@ from typing import List, Optional
 from config.search_config import SearchConfig
 from database import repository as db
 from services.detail_extractor import ExtractedDetail, fetch_and_extract
+from config.settings import get_config
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +64,8 @@ def enrich_missing_jobs(
             jobs = session.query(Job).filter(Job.id.in_(job_ids)).all()
     else:
         jobs = db.list_jobs_needing_enrichment(session, limit=cap)
-    jobs = jobs[:cap]
+    # Apply TTL before the cap so recently failed jobs do not starve later rows.
+    jobs = [j for j in jobs if extraction_due(j)][:cap]
 
     last_fetch = 0.0
     for job in jobs:
@@ -77,14 +80,20 @@ def enrich_missing_jobs(
             time.sleep(wait)
         try:
             detail = fetch_and_extract(url, client=client)
-        except Exception:
-            logger.debug("enrichment extraction raised for job %s", job.id, exc_info=True)
-            detail = ExtractedDetail(extraction_confidence=0.0)
+        except Exception as exc:
+            logger.warning("Enrichment extraction failed for job id=%s type=%s", job.id, type(exc).__name__)
+            detail = ExtractedDetail(extraction_errors=[f"extraction_failed:{type(exc).__name__}"])
         last_fetch = time.monotonic()
-        if detail.extraction_confidence <= 0.0:
+        try:
+            updated = db.update_job_from_enrichment(session, job.id, detail)
+        except Exception as exc:
+            session.rollback()
+            logger.warning("Enrichment storage failed for job id=%s type=%s", job.id, type(exc).__name__)
             s.failed += 1
             continue
-        updated = db.update_job_from_enrichment(session, job.id, detail)
+        if detail.extraction_confidence <= 0.0 or not detail.description_text:
+            s.failed += 1
+            continue
         if updated:
             s.succeeded += 1
             s.confidence_sum += float(detail.extraction_confidence) or 0.0
@@ -93,3 +102,14 @@ def enrich_missing_jobs(
     if s.succeeded:
         s.avg_confidence = s.confidence_sum / s.succeeded
     return s
+
+
+def extraction_due(job, *, now=None) -> bool:
+    cfg = get_config()
+    timestamp = getattr(job, "extracted_at", None)
+    if timestamp is None:
+        return True
+    timestamp = timestamp.replace(tzinfo=timezone.utc) if timestamp.tzinfo is None else timestamp
+    age = ((now or datetime.now(timezone.utc)) - timestamp).total_seconds() / 3600
+    has_errors = getattr(job, "extraction_errors_json", None) not in (None, "", "[]")
+    return age >= (cfg.extraction_refresh_hours if getattr(job, "extraction_status", None) == "COMPLETE" and not has_errors else cfg.extraction_retry_hours)

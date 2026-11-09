@@ -7,6 +7,7 @@ profile content (skills, projects, experience text).
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -38,8 +39,8 @@ def build_cv_tailoring_suggestions(
                 sugg = _ai_direction(ai, profile, job, match)
                 if sugg:
                     return sugg
-            except llm.LLMError:
-                pass
+            except llm.LLMError as exc:
+                logging.getLogger(__name__).warning("CV advice fallback: %s", llm.failure_reason(exc))
     return _deterministic(profile, job, match)
 
 
@@ -48,7 +49,7 @@ def _ai_direction(
 ) -> List[Dict[str, str]]:
     system_prompt = (
         "You are a professional resume coach. Return ONLY JSON: an object "
-        '{"suggestions": [...]} whose items have exactly these keys: field, action, reason. '
+        '{"suggestions": [...]} whose items have exactly these keys: field, action, reason, source_quote. '
         "Present 'field' from the enum: "
         "summary, experience, skills, projects, certifications, languages, "
         "achievements, linkedin_headline, linkedin_features. "
@@ -56,6 +57,7 @@ def _ai_direction(
         "and explicitly citing the concrete evidence (e.g. 'profile lists Kotlin in projects' "
         "or 'JD requires SQL', etc.). Do NOT invent experience that is not in the "
         "candidate profile."
+        " Include a source_quote field with an exact quote from the candidate profile supporting each suggestion."
     )
     candidate = {
         "name": profile.name,
@@ -105,7 +107,10 @@ def _ai_direction(
         f = str(item.get("field") or "").lower().strip()
         action = str(item.get("action") or "").strip()
         reason = str(item.get("reason") or "").strip()
-        if f in allowed and action and reason:
+        quote = item.get("source_quote")
+        from services.candidate_intelligence import evidence
+        grounded = isinstance(quote, str) and len(quote.strip()) >= 3 and any(quote.casefold() in e["quote"].casefold() for e in evidence(profile))
+        if f in allowed and action and reason and grounded:
             out.append({"field": f, "action": action[:220], "reason": reason[:260]})
         if len(out) >= 12:
             break
@@ -177,7 +182,7 @@ def _deterministic(
             if r and r not in {x.lower() for x in langs}:
                 suggestions.append({
                     "field": "languages",
-                    "action": "Add or reposition language: " + r.capitalize() if r else "add job-related language",
+                    "action": "Confirm your proficiency in " + r.capitalize() + "; include it only if you actually have it",
                     "reason": f"JD requests language related to {r!r} that is not listed in the profile",
                 })
     # certifications strong link

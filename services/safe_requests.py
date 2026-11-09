@@ -13,7 +13,7 @@ import socket
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import httpx
 
@@ -127,12 +127,12 @@ def validate_public_http_url(
     is_literal_ip = False
     try:
         ip = ipaddress.ip_address(host)
+    except ValueError:
+        is_literal_ip = False
+    else:
         is_literal_ip = True
         if not allow_private and _is_blocked_ip(ip):
             raise ValueError(f"Blocked IP: {ip}")
-    except ValueError:
-        # not an IP literal
-        is_literal_ip = False
 
     # If NOT a literal IP, resolve and verify no resolved IP is private.
     if not is_literal_ip and not allow_private:
@@ -174,6 +174,7 @@ def safe_get(
     backoff: Optional[ExponentialBackoff] = None,
     client: Optional[httpx.Client] = None,
     allow_private: bool = False,
+    redirect_policy: Optional[Callable[[str], bool]] = None,
 ) -> FetchResult:
     """Bounded-size, rate-limited, retried HTTPS GET.
 
@@ -186,7 +187,7 @@ def safe_get(
     attempts = max(1, backoff.max_retries)
 
     if client is None:
-        client = httpx.Client(timeout=timeout, follow_redirects=False)
+        client = httpx.Client(timeout=timeout, follow_redirects=False, headers={"User-Agent": "HireMeQuackers/2.0"})
         should_close = True
     else:
         should_close = False
@@ -200,15 +201,39 @@ def safe_get(
             if rate_limiter is not None:
                 rate_limiter.wait()
             try:
-                resp = client.get(url, timeout=timeout)
+                request_url = url
+                for redirect_count in range(6):
+                    validate_public_http_url(request_url, allow_private=allow_private)
+                    if isinstance(client, httpx.Client):
+                        # Bound decompressed content while streaming, before allocating a full page.
+                        with client.stream("GET", request_url, timeout=timeout, follow_redirects=False) as streamed:
+                            chunks, size = [], 0
+                            for chunk in streamed.iter_bytes():
+                                chunks.append(chunk[:max_bytes + 1 - size])
+                                size += len(chunks[-1])
+                                if size > max_bytes:
+                                    break
+                            resp = httpx.Response(streamed.status_code, headers=streamed.headers,
+                                                  content=b"".join(chunks), request=streamed.request)
+                    else:
+                        resp = client.get(request_url, timeout=timeout)
+                    if resp.status_code not in {301, 302, 303, 307, 308}:
+                        break
+                    target = urljoin(request_url, resp.headers.get("location", ""))
+                    if not resp.headers.get("location") or redirect_count == 5:
+                        return FetchResult(resp.status_code, b"", resp.headers, error="redirect_limit_or_missing_location")
+                    validate_public_http_url(target, allow_private=allow_private)
+                    if redirect_policy and not redirect_policy(target):
+                        return FetchResult(403, b"", resp.headers, error="redirect_policy_disallowed")
+                    request_url = target
             except httpx.ConnectTimeout as e:
-                last_error = safe_log(f"connect timeout: {e}")
+                last_error = "connect_timeout"
             except httpx.ReadTimeout as e:
-                last_error = safe_log(f"read timeout: {e}")
+                last_error = "read_timeout"
             except httpx.TimeoutException as e:
-                last_error = safe_log(f"timeout: {e}")
+                last_error = "timeout"
             except httpx.RequestError as e:
-                last_error = safe_log(f"request error: {e}")
+                last_error = f"request_error:{type(e).__name__}"
             else:
                 status_code = resp.status_code
                 headers = resp.headers
@@ -225,6 +250,7 @@ def safe_get(
                         content=content,
                         headers=headers,
                         attempts=attempt + 1,
+                        error=last_error if len(resp.content) > max_bytes else None,
                     )
             if attempt < attempts - 1:
                 time.sleep(backoff.delay(attempt))

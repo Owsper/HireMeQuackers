@@ -81,8 +81,8 @@ def _bump_schema_version(session: Session) -> None:
     from .models import Base
 
     existing = session.query(SchemaVersion).order_by(SchemaVersion.id.desc()).first()
-    if existing is None:
-        session.add(SchemaVersion(version="1", applied_at=utcnow()))
+    if existing is None or existing.version != "2":
+        session.add(SchemaVersion(version="2", applied_at=utcnow()))
     # In future this can migrate; for now we only add if missing.
 
 
@@ -93,9 +93,12 @@ def init_db(url: Optional[str] = None) -> Engine:
     """
     engine = get_engine(url)
     _ensure_str_dir(_sqlalchemy_url(url))
+    # init_db() may be called after a previous command selected a different DB URL.
     # Import all models so they're registered on Base.metadata
     from . import models  # noqa: F401
 
+    from .migrations import backup_before_upgrade
+    backup_before_upgrade(engine)
     Base.metadata.create_all(bind=engine)
 
     # Apply backward-compatible column/table migrations

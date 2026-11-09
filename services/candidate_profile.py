@@ -46,6 +46,15 @@ def upsert_profile(
         profile = db.get_candidate_profile(session, profile_id)
         if profile is None:
             raise ValueError(f"Profile {profile_id} does not exist")
+        from services.candidate_intelligence import payload, provenance
+        import json
+        before = payload(profile)
+        try:
+            previous_metadata = json.loads(profile.other_json or "{}")
+        except (ValueError, TypeError):
+            previous_metadata = {}
+        previous_metadata = previous_metadata if isinstance(previous_metadata, dict) else {}
+        changed = False
         for k, v in (
             ("name", name),
             ("email", email),
@@ -56,8 +65,8 @@ def upsert_profile(
             ("cv_path", cv_path),
         ):
             if v is not None:
+                changed = changed or getattr(profile, k) != v
                 setattr(profile, k, v)
-        changed = False
         if skills is not None:
             if skills != profile.skills:
                 profile.skills_json = _j(skills)
@@ -91,9 +100,23 @@ def upsert_profile(
             profile.active = active
         # Only bump version on real content change
         if changed:
+            metadata = json.loads(profile.other_json or "{}")
+            current = payload(profile)
+            ledger = provenance(current, source=profile.cv_path or f"profile:{profile.id}")
+            previous = {c["field"]: c for c in previous_metadata.get("provenance", {}).get("claims", []) if isinstance(c, dict) and "field" in c}
+            for claim in ledger["claims"]:
+                root = claim["field"].split("[")[0].split(".")[0]
+                if before.get(root) != current.get(root):
+                    claim.update(status="USER_CONFIRMED", source="user correction")
+                elif claim["field"] in previous and previous[claim["field"]].get("value") == claim["value"]:
+                    claim.update(previous[claim["field"]])
+                else:
+                    claim["status"] = "LEGACY_UNVERIFIED"
+            metadata["provenance"] = ledger
+            profile.other_json = _j(metadata)
             profile.profile_version += 1
             profile.updated_at = _utcnow()
-            invalidate_on_profile_change(profile.profile_version, profile.id)
+            # Cache keys include the entire candidate payload and version.
         session.commit()
         session.refresh(profile)
         return profile
@@ -115,6 +138,10 @@ def upsert_from_extraction(
 
     session = get_session(get_engine())
     try:
+        from services.candidate_intelligence import provenance
+        other = dict(extraction.get("other") or {})
+        if "provenance" not in other:
+            other["provenance"] = provenance(extraction, source=extraction.get("cv_path") or "user input")
         profile = db.upsert_candidate_profile(
             session=session,
             name=extraction.get("name") or "Unknown",
@@ -132,7 +159,7 @@ def upsert_from_extraction(
             projects=extraction.get("projects") or [],
             cv_path=extraction.get("cv_path"),
             active=active,
-            other=extraction.get("other"),
+            other=other,
         )
         return profile
     finally:

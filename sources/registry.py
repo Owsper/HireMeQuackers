@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 from typing import Dict, List
 
 from config.search_config import SearchConfig
@@ -30,7 +31,8 @@ def list_sources() -> List[JobSource]:
     for cls in REGISTRY.values():
         try:
             out.append(cls())
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Source initialization failed: %s (%s)", cls.__name__, type(exc).__name__)
             continue
     return out
 
@@ -76,8 +78,8 @@ def _eager_load() -> None:
         if mod not in sys.modules:
             try:
                 importlib.import_module(mod)
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Source module unavailable: %s (%s)", mod, type(exc).__name__)
 
 
 def ensure_loaded() -> None:

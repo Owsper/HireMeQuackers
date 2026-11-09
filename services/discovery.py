@@ -118,7 +118,8 @@ def run_discovery(
         if on_progress:
             on_progress(count, state)
 
-    scan_summary = engine.run_all(cfg, on_progress=_progress)
+    candidate = db.get_active_candidate_profile(session)
+    scan_summary = engine.run_all(cfg, on_progress=_progress, profile=candidate) if candidate is not None else engine.run_all(cfg, on_progress=_progress)
     for name, result in scan_summary.per_source.items():
         db.record_source_health(
             session=session,
@@ -169,11 +170,26 @@ def run_discovery(
             existing_row.status = "OPEN"
             duplicates += 1
             session.commit()
-        eligible.append(existing_row)
+        if existing_row.id not in {j.id for j in eligible}:
+            eligible.append(existing_row)
 
     summary.total_discovered = len(eligible)
     summary.new_jobs = new_jobs
     summary.duplicates = duplicates
+
+    # Enrich before filtering so snippets cannot exclude a genuinely relevant vacancy.
+    if getattr(cfg, "enable_detail_extraction", True):
+        from services.enrichment_service import enrich_missing_jobs
+        try:
+            esum = enrich_missing_jobs(session, cfg, job_ids=[j.id for j in eligible])
+            summary.enrichment_attempted = esum.attempted
+            summary.enrichment_succeeded = esum.succeeded
+            summary.enrichment_failed = esum.failed
+            summary.enrichment_skipped = esum.skipped
+            summary.enrichment_avg_confidence = esum.avg_confidence
+        except Exception as exc:
+            session.rollback()
+            log.warning("Enrichment step failed: %s", type(exc).__name__)
 
     # Step 3: deterministic filters, with a structured search intent so
     # the title / location hard constraints run *before* the loose
@@ -189,30 +205,11 @@ def run_discovery(
         for (j, r) in excluded
     ]
 
-    # Step 3b: detail-page enrichment (populates missing description/fields)
-    if getattr(cfg, "enable_detail_extraction", True):
-        try:
-            from services.enrichment_service import enrich_missing_jobs
-
-            enrich_ids = [j.id for j in eligible if not (j.description and (j.description or "").strip())]
-            if enrich_ids:
-                esum = enrich_missing_jobs(session, cfg, job_ids=enrich_ids)
-                summary.enrichment_attempted = esum.attempted
-                summary.enrichment_succeeded = esum.succeeded
-                summary.enrichment_failed = esum.failed
-                summary.enrichment_skipped = esum.skipped
-                summary.enrichment_avg_confidence = esum.avg_confidence
-        except Exception:
-            log.exception("enrichment step failed (non-fatal)")
-
     # Step 4: (optional) AI evaluation
-    if evaluate_with_ai:
-        profile = db.get_active_candidate_profile(session)
-        if profile is not None:
-            # Refresh jobs (session.commit lazy)
-            from services.matching import evaluate_jobs
-
-            evaluate_jobs(matched, profile, on_progress=_progress, intent=intent, cfg=cfg)
+    profile = db.get_active_candidate_profile(session)
+    if profile is not None:
+        from services.matching import evaluate_jobs
+        evaluate_jobs(matched, profile, on_progress=_progress, intent=intent, cfg=cfg, use_ai=evaluate_with_ai)
 
     # Step 5: finish scan record
     summary.status = "done" if scan_summary.status in ("done", "partial") else "error"
@@ -251,12 +248,23 @@ def _find_same_vacancy(session, norm: dict) -> Optional[Job]:
     """A stored job with the same title + company (+ compatible city)."""
     from sqlalchemy import func
     from services.platforms import same_city, vacancy_key
+    url = canonical_url(norm.get("original_url"))
+    external_id = norm.get("external_job_id")
+    if external_id:
+        exact = session.query(Job).filter_by(external_job_id=external_id, source=norm.get("source")).first()
+        if exact is not None:
+            return exact
+    for row in session.query(Job).filter(Job.original_url.like(url.split("?")[0] + "%")).limit(200):
+        if url and canonical_url(row.original_url) == url:
+            return row
 
     key = vacancy_key(norm.get("title", ""), norm.get("company", ""))
     if not key:
         return None
     company = (norm.get("company") or "").strip().lower()
     for row in session.query(Job).filter(func.lower(Job.company) == company).limit(200):
+        if external_id and row.external_job_id and row.source == norm.get("source") and row.external_job_id != external_id:
+            continue
         if (vacancy_key(row.title or "", row.company or "") == key
                 and same_city(row.location, norm.get("location"))):
             return row

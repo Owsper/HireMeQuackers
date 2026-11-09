@@ -185,7 +185,7 @@ class SearchConfig(BaseModel):
                         out.append(EmploymentType(item.lower()))
                     except ValueError:
                         out.append(classify_employment_type(item))
-            return out or [EmploymentType.INTERNSHIP]
+            return out  # an explicit empty list means no employment-type restriction
         # not a list - coerce scalar
         return [EmploymentType(str(v))]
 

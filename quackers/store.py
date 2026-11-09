@@ -104,6 +104,9 @@ def job_to_dict(job) -> Dict[str, Any]:
         "first_discovered": dt_short(job.first_discovered_at),
         "status": job.status,
         "fingerprint": job.content_fingerprint,
+        "extraction_status": job.extraction_status,
+        "extraction_method": job.extraction_method,
+        "description_completeness": job.description_completeness,
     }
 
 
@@ -188,7 +191,7 @@ def list_jobs_with_match(
         for j in jobs:
             m = (
                 db.get_match_for_job(
-                    session, j.id, profile_version=active_profile.profile_version
+                    session, j.id, profile_version=active_profile.profile_version, candidate_profile_id=active_profile.id
                 )
                 if active_profile
                 else db.get_match_for_job(session, j.id)

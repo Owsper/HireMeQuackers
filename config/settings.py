@@ -6,6 +6,7 @@ for zero extra dependencies.
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 from typing import Any, Optional
 
@@ -37,8 +38,8 @@ def _load_env_file() -> None:
         if env_file.exists():
             try:
                 load_dotenv(env_file, override=False)
-            except Exception:
-                pass
+            except (OSError, ValueError) as exc:
+                logging.getLogger(__name__).warning("Could not load .env: %s", type(exc).__name__)
             break
 
 
@@ -69,6 +70,29 @@ class AppConfig(BaseModel):
     ollama_base_url: str = "http://localhost:11434/v1"
     enable_ai_matching: bool = True
     enable_ai_direction: bool = False
+    ai_timeout_seconds: float = Field(default=45.0, gt=0, le=300)
+    ai_max_attempts: int = Field(default=3, ge=1, le=5)
+    ai_backoff_seconds: float = Field(default=1.0, ge=0, le=30)
+    extraction_refresh_hours: float = Field(default=168, ge=0)
+    extraction_retry_hours: float = Field(default=6, ge=0)
+    matching_weights: dict[str, float] = Field(default_factory=lambda: {
+        "required_skills": 35, "experience": 25, "qualifications": 10,
+        "preferred_skills": 10, "location": 10, "languages": 10,
+    })
+
+    @field_validator("matching_weights")
+    @classmethod
+    def _weights(cls, value):
+        import math
+        allowed = {"required_skills", "experience", "qualifications", "preferred_skills", "location", "languages"}
+        if set(value) != allowed or any(not math.isfinite(v) or v < 0 for v in value.values()) or not sum(value.values()):
+            raise ValueError("MATCHING_WEIGHTS must contain the six scoring categories with finite nonnegative weights and a positive sum")
+        return value
+
+    @field_validator("gemini_api_key", "openai_api_key", "anthropic_api_key", "openrouter_api_key", "groq_api_key", "ai_model", "ai_provider")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return value.strip()
 
     database_url: str = "sqlite:///./data/jobs.db"
     data_dir: Path = Path("data")
@@ -127,7 +151,14 @@ def get_config() -> AppConfig:
         except ValueError:
             return default
 
+    import json
+    try:
+        weights = json.loads(_env("MATCHING_WEIGHTS", "null"))
+    except json.JSONDecodeError:
+        raise ValueError("MATCHING_WEIGHTS must be valid JSON") from None
+    extra = {"matching_weights": weights} if weights is not None else {}
     return AppConfig(
+        **extra,
         app_env=_env("APP_ENV", "local"),
         log_level=_env("LOG_LEVEL", "INFO"),
         ai_provider=_env("AI_PROVIDER", "auto"),
@@ -142,6 +173,11 @@ def get_config() -> AppConfig:
         ollama_base_url=_env("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
         enable_ai_matching=_env_bool("ENABLE_AI_MATCHING", True),
         enable_ai_direction=_env_bool("ENABLE_AI_DIRECTION", False),
+        ai_timeout_seconds=_env_float("AI_TIMEOUT_SECONDS", 45),
+        ai_max_attempts=_env_int("AI_MAX_ATTEMPTS", 3),
+        ai_backoff_seconds=_env_float("AI_BACKOFF_SECONDS", 1),
+        extraction_refresh_hours=_env_float("EXTRACTION_REFRESH_HOURS", 168),
+        extraction_retry_hours=_env_float("EXTRACTION_RETRY_HOURS", 6),
         database_url=_env("DATABASE_URL", "sqlite:///./data/jobs.db"),
         data_dir=Path(_env("DATA_DIR", str(PROJECT_ROOT / "data"))),
         request_timeout_seconds=_env_int("REQUEST_TIMEOUT_SECONDS", 15),

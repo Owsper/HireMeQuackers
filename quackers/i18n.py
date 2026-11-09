@@ -83,7 +83,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "bye": "Auf Wiedersehen.",
         "yes": "ja",
         "no": "nein",
-        "lang_changed": "Sprache wurde auf {language} geändert.",
+        "lang_changed": "Die Sprache wurde auf {language} geändert.",
         "lang_unsupported": "Sprache wird nicht unterstützt: {language}."
                             " Unterstützt: {supported}.",
         "interface_lang": "Oberfläche",
@@ -245,6 +245,9 @@ def parse_lang(raw: str) -> Optional[str]:
     if s.lower() in LANGUAGE_LABELS:
         return s.lower()
     flat = _strip_accents(s).lower()
+    native_names = {"deutsch": "de", "francais": "fr", "espanol": "es", "english": "en", "russkij": "ru"}
+    if flat in native_names:
+        return native_names[flat]
     for code, name in LANGUAGE_LABELS.items():
         if flat == _strip_accents(name).lower():
             return code
