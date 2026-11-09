@@ -572,17 +572,50 @@ def _lang_label(code: str) -> str:
     return f"{code.upper()} {LANGUAGE_LABELS.get(code, code)}"
 
 
+def cmd_lang_set(argv_language: str, cli) -> None:
+    """``/lang set <language>`` — change the UI/interface language only.
+
+    Resolution goes through :func:`quackers.i18n.parse_lang`, which reuses
+    the same alias table used for search-language labels; the language is
+    installed with :func:`quackers.i18n.set_language` (applies immediately)
+    and written to ``SettingsRow`` under ``ui_language`` so it survives a
+    restart.  Nothing in ``search_languages`` / ``include_english`` is
+    touched — interface language and search language are fully independent.
+    """
+    from quackers import i18n
+
+    code = i18n.parse_lang(argv_language)
+    if code is None:
+        raise cli.CliError(i18n.t(
+            "lang_unsupported",
+            language=argv_language,
+            supported=i18n.supported_display(),
+        ))
+    i18n.set_language(code)
+    i18n.persist_lang(code)
+    term.ok(i18n.t("lang_changed", language=i18n.display_for(code)))
+
+
 def cmd_lang(args) -> None:
     """Show / add / clear the languages job titles are searched in (`/lang DE RU`).
 
     Only ``search_languages`` / ``include_english`` of the saved search
     config change; the applicant's CV languages are never touched.
+    ``/lang set DE`` is a separate command (cmd_lang_set) that changes only
+    the UI/interface language.
     """
     from config.search_config import SearchConfig
     from services.multilingual import LANGUAGE_LABELS
 
     cli = _cli()
     words = [c.strip() for c in re.split(r"[,\s]+", " ".join(args.languages or [])) if c.strip()]
+    if words and words[0].lower() == "set" and len(words) > 1:
+        # `lang set <X>` -> change the interface language only. `languages`
+        # (nargs="*") is greedy, so argparse cannot host a `set` subparser
+        # alongside it; dispatching on the first token keeps the CLI surface
+        # identical while preserving the existing `/lang <codes>` flow.
+        cmd_lang_set(words[1], cli)
+        return
     action = words[0].lower() if words else ""
     if action in ("help", "-h", "?"):
         term.info(LANG_HELP)
@@ -764,6 +797,12 @@ def _print_langs_panel(cfg) -> None:
     else:
         print("  " + styled(title, "bold"))
 
+    # UI interface language (independent from search languages).
+    from quackers import i18n
+    print()
+    print(f"  {styled(i18n.t('interface_lang'), 'bold')}"
+          f"  {styled(i18n.display_for(i18n.get_language()), 'bold')}")
+
     # Current selections.
     heading("Current Search Languages")
 
@@ -813,6 +852,7 @@ def _print_langs_panel(cfg) -> None:
         ("/lang", "Show language settings"),
         ("/lang clear", "Reset search languages"),
         ("/lang help", "Show command help"),
+        ("/lang set de", "change the interface language"),
     ]
 
     command_width = max(cw(command) for command, _ in commands) + 3
@@ -845,7 +885,8 @@ def register(sub) -> None:
 
     s = sub.add_parser("lang", help="show / set the languages job titles are searched in")
     s.add_argument("languages", nargs="*",
-                   help="ISO 639-1 codes to add (DE RU EN), or: clear / help")
+                   help="ISO 639-1 codes to add (DE RU EN), 'clear'/'help', "
+                        "or 'set <language>' for the UI language")
     g = s.add_mutually_exclusive_group()
     g.add_argument("--no-english", dest="no_english", action="store_true", default=None,
                    help="don't search English titles")
