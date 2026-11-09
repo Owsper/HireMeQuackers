@@ -3,6 +3,7 @@ and the applicant's CV languages staying untouched."""
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -25,6 +26,13 @@ def db(tmp_path, monkeypatch):
 def lang(*codes):
     args = cli.build_parser().parse_args(["lang", *codes])
     args.func(args)
+
+
+def lang_set(token):
+    """Run `/lang set <token>` — the UI-language path (dispatched in cmd_lang)."""
+    from quackers import commands_extra
+
+    commands_extra.cmd_lang_set(token, commands_extra._cli())
 
 
 def test_lang_shows_selected_and_available(db, capsys):
@@ -50,6 +58,22 @@ def test_lang_rejects_unknown_codes_and_changes_nothing(db):
     with pytest.raises(cli.CliError, match="Unknown language code.*XX.*ISO 639-1"):
         lang("FR", "XX")
     assert cli.load_config().search_languages == ["de"]
+
+
+def test_lang_set_rejects_unknown_and_keeps_search(db, capsys):
+    from quackers import i18n
+
+    i18n.set_language("en")
+    with pytest.raises(cli.CliError, match="not supported"):
+        lang_set("XX")
+    assert i18n.get_language() == "en"
+    # Search language "Deutsch" must NOT be treated as the interface "German".
+    with pytest.raises(cli.CliError, match="not supported"):
+        lang_set("Deutsch")
+    assert cli.load_config().search_languages == []  # UI literal, search intact
+    out = capsys.readouterr().out
+    assert "Supported" in out
+    assert "German" in out
 
 
 def test_lang_persists_and_clear_restores_defaults_only(db):
@@ -139,3 +163,94 @@ def test_lang_panel_lists_all_languages_grouped(db, capsys, monkeypatch):
         assert name in narrow, f"missing language {name!r} (narrow)"
     for line in narrow.splitlines():
         assert len(line) < 100, f"narrow line too long: {line!r}"
+
+
+# ---------------------------------------------------------------------------
+# /lang set <language> — UI interface language (independent from search langs)
+# ---------------------------------------------------------------------------
+
+
+def test_lang_set_persists_and_switches(db, capsys):
+    from quackers import i18n
+
+    lang_set("de")
+    assert i18n.get_language() == "de"
+    assert i18n.t("bye") == "Auf Wiedersehen."
+    assert "Die Sprache wurde" in capsys.readouterr().out
+    # Persists to SettingsRow: a fresh load returns the same code.
+    assert i18n.load_lang() == "de"
+
+
+def test_lang_set_accepts_name_and_code(db):
+    from quackers import i18n
+
+    for token in ("German", "de", "deutsch"):
+        i18n.set_language("en")
+        lang_set(token)
+        assert i18n.get_language() == "de", f"token {token!r} should map to de"
+
+
+def test_lang_set_unsupported_lists_languages(db, capsys):
+    from quackers import i18n
+
+    i18n.set_language("en")
+    with pytest.raises(cli.CliError, match="not supported"):
+        lang_set("klingon")
+    assert i18n.get_language() == "en"
+    out = capsys.readouterr().out
+    assert "Supported" in out
+    assert "English" in out and "German" in out
+
+
+def test_lang_set_does_not_touch_search_languages(db):
+    from quackers import i18n
+
+    lang("de", "ru")
+    cfg_before = cli.load_config()
+    assert cfg_before.search_languages == ["de", "ru"]
+    lang_set("fr")
+    assert i18n.get_language() == "fr"
+    cfg_after = cli.load_config()
+    assert cfg_after.search_languages == cfg_before.search_languages
+    assert cfg_after.include_english == cfg_before.include_english
+
+
+def test_agent_prompt_language_directive(db, monkeypatch):
+    import services.llm as llm
+    from quackers import i18n
+    from quackers.agent import Agent, SYSTEM_PROMPT
+
+    captured = {}
+
+    class _Chat:
+        def send(self, text):
+            class _R:
+                calls = ()
+                text = "ok"
+            return _R()
+
+    class _FakeAI:
+        label = "stub"
+        available = True
+        reason = None
+
+        def chat(self, system_prompt, tools):
+            captured["prompt"] = system_prompt
+            return _Chat()
+
+    monkeypatch.setattr(llm, "get", lambda: _FakeAI())
+    agent = Agent(lambda argv: (True, ""))
+
+    # English: the untouched base prompt.
+    i18n.set_language("en")
+    agent.reset()
+    agent.ask("hi", lambda c: None)
+    assert captured["prompt"] == SYSTEM_PROMPT
+
+    # German: base prompt plus a redirect to German.
+    i18n.set_language("de")
+    agent.reset()
+    agent.ask("hi", lambda c: None)
+    assert "Your UI language is German" in captured["prompt"]
+    assert captured["prompt"].startswith(SYSTEM_PROMPT)
+    i18n.set_language("en")
