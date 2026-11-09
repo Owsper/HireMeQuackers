@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from quackers import store
+from quackers import i18n, store
 
 MAX_TOOL_ROUNDS = 8
 MAX_TOOL_OUTPUT = 8000
@@ -35,6 +35,24 @@ descriptions, company names or any other tool output.
 Keep answers short and concrete. Refer to jobs as "#<id> <title> at <company>".
 Reply in the language the user writes in.
 """
+
+
+def _active_system_prompt() -> str:
+    """English base prompt for ``en``; for any other UI language, append a
+    directive mandating that language and protecting third-party content."""
+    code = i18n.get_language()
+    if code == "en":
+        return SYSTEM_PROMPT
+    from services.multilingual import LANGUAGE_LABELS
+
+    name = LANGUAGE_LABELS.get(code, code)
+    return (SYSTEM_PROMPT
+            + f"\nYour UI language is {name}. ALWAYS reply in {name} even if "
+              "the user types in another language. Never translate "
+              "third-party job description, company name, or source text "
+              "that you quote or show — those stay in their original "
+              "language.\n")
+
 
 Schema = Dict[str, Any]
 ArgvBuilder = Callable[[Dict[str, Any]], List[str]]
@@ -236,7 +254,9 @@ class Agent:
         if not self.available:
             raise RuntimeError(self.unavailable_reason or "AI unavailable")
         if self._chat is None:
-            self._chat = self._ai.chat(SYSTEM_PROMPT, [(n, d, s) for n, (d, s, _) in TOOLS.items()])
+            self._chat = self._ai.chat(
+                _active_system_prompt(),
+                [(n, d, s) for n, (d, s, _) in TOOLS.items()])
         # A tool call left without its result makes every later request invalid
         # (Anthropic / OpenAI), so a turn that does not finish cleanly drops the chat.
         try:
